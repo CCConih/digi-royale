@@ -71,10 +71,13 @@ const pick = a => a[Math.random() * a.length | 0];
 const lerp = (a, b, t) => a + (b - a) * t;
 
 let units, shots, fxs, feed, time, speed = 1, over, endT, drops, nextDrop;
-// Supply drops: a crate parachutes into the zone every few seconds holding one of three items.
-// shield absorbs attack damage (not the zone) for a while, heal restores HP, ult fills the ultimate meter.
-const DROP = { every: 5, fall: 0.9, life: 14, grab: 90, shield: 0.4, shieldTime: 8, heal: 0.4 };
-const DROP_KIND = { shield: { c: '#4fd6ff', txt: 'SHIELD!' }, heal: { c: '#5be36b', txt: '+HEAL' }, ult: { c: '#ffd23a', txt: 'ULT READY!' } };
+// Supply drops: a crate parachutes into the zone every few seconds holding one of four items.
+// shield absorbs attack damage (not the zone) for a while, heal restores HP, ult fills the ultimate meter,
+// exp gives EXP that grows as the zone shrinks: expMin at the full circle → expMax (one whole level) fully closed.
+const DROP = { every: 5, fall: 0.9, life: 14, grab: 90, shield: 0.4, shieldTime: 8, heal: 0.4, expMin: 25, expMax: 100 };
+const DROP_KIND = { shield: { c: '#4fd6ff', txt: 'SHIELD!' }, heal: { c: '#5be36b', txt: '+HEAL' }, ult: { c: '#ffd23a', txt: 'ULT READY!' },
+  exp: { c: '#c77dff', txt: 'EXP' } };
+const expDrop = zr => Math.round(lerp(DROP.expMax, DROP.expMin, Math.min(1, zr / ZONE_R0)));
 
 function newGame() {
   const pool = ROSTER.filter(MODES[MODE].pool), n = Math.min(MODES[MODE].n, pool.length);
@@ -108,14 +111,22 @@ function damage(u, amt, from, ranged = false) { // only melee knocks back and st
   if (from && !ranged) { const dx = u.x - from.x, dy = u.y - from.y, l = Math.hypot(dx, dy) || 1; u.vx += dx / l * 60; u.vy += dy / l * 60; }
   if (u.hp <= 0) {
     u.hp = 0; u.dead = true; setState(u, 'faint');
-    if (from && !from.dead) { // level up on KO
-      from.kills++; from.lvl++; from.hpMax = Math.round(from.hpMax * 1.15);
-      from.hp = Math.min(from.hpMax, from.hp + from.hpMax * 0.4); from.dmg *= 1.1; from.sc *= 1.05; from.r *= 1.05;
-    }
     feed.unshift({ txt: from ? `${from.d.n} KO'd ${u.d.n}` : `${u.d.n} fell to the zone`, t: 4 });
-    if (from && !from.dead && MODES[MODE].evolve && from.lvl % EVOLVE_EVERY === 0 && EVO[from.d.id]) evolve(from);
+    if (from && !from.dead) { from.kills++; gainExp(from, LEVEL_EXP); } // a KO is worth one full level
     feed.length = Math.min(feed.length, 5);
   } else if (from && !ranged && !['attack', 'shoot', 'charge', 'ult'].includes(u.state)) setState(u, 'hurt');
+}
+
+// EXP: every LEVEL_EXP levels up (max HP ×1.15, heal 40%, damage ×1.1, size ×1.05). KOs and EXP crates give it.
+const LEVEL_EXP = 100;
+function gainExp(u, amt) {
+  u.exp = (u.exp || 0) + amt;
+  while (u.exp >= LEVEL_EXP && !u.dead) {
+    u.exp -= LEVEL_EXP; u.lvl++; u.hpMax = Math.round(u.hpMax * 1.15);
+    u.hp = Math.min(u.hpMax, u.hp + u.hpMax * 0.4); u.dmg *= 1.1; u.sc *= 1.05; u.r *= 1.05;
+    if (MODES[MODE].evolve && u.lvl % EVOLVE_EVERY === 0 && EVO[u.d.id]) evolve(u);
+  }
+  feed.length = Math.min(feed.length, 5);
 }
 
 // Digivolution (modes with evolve): every EVOLVE_EVERY levels a Digimon becomes one of its 3 options in evo.js
@@ -276,9 +287,11 @@ function updateDrops(dt, zr, alive) {
     d.taken = true;
     if (d.kind === 'shield') { u.shield = u.hpMax * DROP.shield; u.shieldMax = u.shield; u.shieldT = DROP.shieldTime; }
     else if (d.kind === 'heal') u.hp = Math.min(u.hpMax, u.hp + u.hpMax * DROP.heal);
-    else u.ult = ULT.full;
-    fxs.push({ kind: 'name', u, txt: DROP_KIND[d.kind].txt, c: DROP_KIND[d.kind].c, t: 0, life: 1.2 },
+    else if (d.kind === 'ult') u.ult = ULT.full;
+    const xp = d.kind === 'exp' && expDrop(zr);
+    fxs.push({ kind: 'name', u, txt: xp ? `+${xp} EXP` : DROP_KIND[d.kind].txt, c: DROP_KIND[d.kind].c, t: 0, life: 1.2 },
              { kind: 'blast', x: d.x, y: d.y - 6, r: 22, c: DROP_KIND[d.kind].c, t: 0, life: 0.35 });
+    if (xp) gainExp(u, xp); // after the popup, so a DIGIVOLVE! popup lands on top
   }
   drops = drops.filter(d => !d.taken && d.t < DROP.fall + DROP.life);
 }
@@ -446,6 +459,7 @@ function drawUnit(u, t) {
     ctx.fillStyle = r > 0.5 ? '#5be36b' : r > 0.25 ? '#ffd23a' : '#ff4a4a'; ctx.fillRect(bx, by, bw * r, 2);
     const m = u.ult / ULT.full; // ultimate meter, flashes when ready
     ctx.fillStyle = m >= 1 ? (Math.sin(t * 16) > 0 ? '#fff' : '#4fd6ff') : '#2f9fd0'; ctx.fillRect(bx, by + 2, bw * m, 1);
+    ctx.fillStyle = '#c77dff'; ctx.fillRect(bx, by + 3, bw * (u.exp || 0) / LEVEL_EXP, 1); // exp toward next level
     if (u.lvl > 1) { ctx.fillStyle = '#ffe58a'; ctx.font = 'bold 7px sans-serif'; ctx.textAlign = 'left'; ctx.fillText('Lv' + u.lvl, bx + bw + 2, by + 3); }
   }
 }
@@ -470,6 +484,7 @@ function drawCrate(d, t) {
   ctx.fillStyle = '#fff';
   if (d.kind === 'heal') { ctx.fillRect(x - 1, y - 8, 2, 5); ctx.fillRect(x - 3, y - 6, 6, 1.5); }
   else if (d.kind === 'shield') { ctx.fillRect(x - 3, y - 8, 6, 3); ctx.fillRect(x - 2, y - 5, 4, 1.5); ctx.fillRect(x - 1, y - 3.5, 2, 1); }
+  else if (d.kind === 'exp') { ctx.fillRect(x - 1, y - 8, 2, 1); ctx.fillRect(x - 2, y - 7, 4, 1); ctx.fillRect(x - 3, y - 6, 6, 1); ctx.fillRect(x - 1, y - 5, 2, 3); } // up arrow
   else { ctx.fillRect(x, y - 8, 2, 2); ctx.fillRect(x - 1, y - 6, 2, 2); ctx.fillRect(x - 2, y - 4, 4, 1); ctx.fillRect(x - 1, y - 3, 1, 1); }
   ctx.restore();
 }
@@ -618,6 +633,8 @@ if (new URLSearchParams(location.search).has('test')) {
   const agu = ROSTER.find(d => d.n === 'Agumon'), e = mk(0, 0); e.d = agu; e.lvl = 3; e.hpMax = e.hp = stageHp(2);
   evolve(e); ok('evolve: Rookie becomes one of its 3 Champion options', e.d.st === 3 && EVO[agu.id].includes(e.d.id) && e.hpMax === stageHp(3));
   ok('every Rookie–Ultimate has 3 next-stage options', ROSTER.filter(d => d.st >= 2 && d.st <= 4).every(d => EVO[d.id].length === 3 && EVO[d.id].every(i => DEX[i].st === d.st + 1)));
+  const g = mk(0, 0); g.d = DEX[ROSTER.find(d => d.st === 5).id]; gainExp(g, 250); ok('250 EXP = 2 levels + 50 left over', g.lvl === 3 && g.exp === 50);
+  ok('EXP crate grows as the zone shrinks (25 → 100)', expDrop(ZONE_R0) === 25 && expDrop(ZONE_R0 / 2) > 25 && expDrop(0) === 100);
   units = real; fxs = fxs.filter(f => f.u !== e); feed.shift(); // drop the test unit's popup and feed line
 }
 </script>

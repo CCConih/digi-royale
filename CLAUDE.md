@@ -20,8 +20,8 @@ A single-screen, portrait auto battle royale: 35 random Digimon (Rookie–Mega) 
 - Data/Free/Unknown attribute can be ranged: 50% damage, no knockback, 5% faster.
 - Zone shrinks nonstop over 70 s; damage rises from 1% to 10% max HP/s as it shrinks. Digimon walk back in.
 - Ultimate: meter fills over time and from damage dealt/taken; fires the Digimon's signature technique in its archetype (projectile, melee, beam, dash, cone, chain, nova, aura, orbit, meteor, boomerang). Ult hits never refill the caster's meter. Fire burns, ice/water slow, electric pierces.
-- Supply drops every 5 s: shield, heal, or full ult.
-- KO = level up: max HP ×1.15, heal 40%, damage ×1.1, size ×1.05.
+- Supply drops every 5 s: shield, heal, full ult, or EXP. An EXP crate gives 25 EXP at the full circle, rising to 100 as the zone closes (`DROP.expMin`/`expMax`).
+- EXP: 100 EXP (`LEVEL_EXP`) = level up: max HP ×1.15, heal 40%, damage ×1.1, size ×1.05. A KO gives 100 EXP. A purple line under the HP and ult bars shows progress to the next level.
 - ROOKIES mode only: at levels 3, 6 and 9 a Digimon digivolves into a random one of its 3 `EVO` options (Rookie → Champion → Ultimate → Mega). HP and damage scale by the stage formulas, size follows the new stage, and the technique and type switch to the new form. The ranged/melee role is kept.
 - `KIND_DMG` and `MODES.rookie.kindDmg` are sim-tuned so each archetype wins 0.7–1.5× its fair share.
 
