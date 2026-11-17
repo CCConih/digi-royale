@@ -11,7 +11,7 @@ Custom attack animations (`ANIM` in index.html) work per Digimon. Each entry is 
 - Gabumon "Petit Fire" (cone): poses F1–F3 while charging and F4–F8 after firing (`vfx/gabumon-poses.png`). The effect frames F4–F8 of row 1 of `vfx/special-fx.png` grow out of his `mouth` toward the target, about 70 px long; the cone still hits out to 150 px. Built by `python -I tools/mkguide.py gabumon-poses tools/src/gabumon-poses.jpg vfx/gabumon-poses.png` and `python -I tools/mkguide.py special-fx tools/src/special-fx.jpg vfx/special-fx.png`. Rows 0 and 2 of special-fx.png (Scissors Execution = Crabmon, Lullaby Bubble = Otamamon) are cut but not used yet.
 
 ## Run
-`python -m http.server 8765` in this folder, then open http://localhost:8765/ (it must be served; `file://` won't load the sheets). `?test` runs 12 self-checks (combat, EXP, evolution, Omnimon, Gabumon poses) and logs PASS/FAIL to the console.
+`python -m http.server 8765` in this folder, then open http://localhost:8765/ (it must be served; `file://` won't load the sheets). `?test` runs 14 self-checks (combat, EXP, evolution, Omnimon, Gabumon poses and a live Gabumon scene) and logs PASS/FAIL to the console.
 
 ## Files
 - `index.html`: the whole game (one canvas, about 600 lines, no dependencies).

@@ -129,9 +129,9 @@ function customPose(u) {
   if (u.state === 'ult') return (A.seq.find(s => u.st < s[1]) || A.seq.at(-1))[0];
   return -1;
 }
-// Gabumon "Petit Fire": special-fx.png row 1 frames F4–F8 (cone blast → spread → eruption → embers → dissolve) from his mouth
+// Gabumon "Petit Fire": special-fx.png row 1 frames F4–F8 (cone blast → spread → eruption → embers → dissolve) from his
+// mouth. It reuses his pose timing (ANIM.Gabumon.seq): pose frame n and fx frame n line up, so they can't drift apart.
 const SFX_W = 96, SFX_H = 100, sfxImg = Object.assign(new Image(), { src: 'vfx/special-fx.png' });
-const PETIT_FIRE = [[3, 0.14], [4, 0.3], [5, 0.5], [6, 0.68], [7, 0.85]]; // [fx frame, until s], in step with his poses
 function drawAD(frame, x, y, sc, flip, alpha = 1) {
   if (!adImg.naturalWidth) return;
   ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(Math.round(x), Math.round(y)); if (flip) ctx.scale(-1, 1);
@@ -195,12 +195,13 @@ function evolve(u) {
   feed.unshift({ txt: `${u.d.n} digivolved to ${d.n}!`, t: 4 });
   fxs.push({ kind: 'name', u, txt: 'DIGIVOLVE!', c: '#ffd23a', t: 0, life: 1.4 });
   u.d = d; u.flash = 0.3; preloadEvo(d);
+  if (u.state === 'charge' || u.state === 'ult') { setState(u, 'idle'); u.ultAt = null; } // the old form's attack ends; the new form never plays poses for it
 }
 
 // Move effects pulled from digisurvivor.com's G.VFX (vfx/*). Per-Digimon technique → palette + sprite shapes.
 // shortcut: needs the http server (fetch); opened as file:// it falls back to the plain circle blast.
 let VFX = null;
-Promise.all(['vfx/atlas.json', 'vfx/techs.json'].map(p => fetch(p).then(r => r.json())))
+const vfxReady = Promise.all(['vfx/atlas.json', 'vfx/techs.json'].map(p => fetch(p).then(r => r.json())))
   .then(([a, t]) => { VFX = { rects: a.rects, shapes: a.shapes, pal: a.palettes, techs: t, img: sheet('vfx/atlas.png') }; })
   .catch(() => {});
 const visOf = u => VFX && VFX.techs[u.d.id];
@@ -263,7 +264,7 @@ function fireUlt(u) {
     case 'melee': hitArc(u, u.x, u.y - 8, ang, 0.9, 64, D * 1.2);
       fxs.push({ kind: 'swing', u, ang, r: 64, vis: v, c, t: 0, life: 0.3, skill: sk }); break;
     case 'cone': hitArc(u, ox, oy, ang, 0.45, 150, D);
-      if (u.d.n === 'Gabumon') { fxs.push({ kind: 'petitfire', u, ang, t: 0, life: PETIT_FIRE.at(-1)[1] }); break; }
+      if (u.d.n === 'Gabumon') { fxs.push({ kind: 'petitfire', u, ang, t: 0, life: ANIM.Gabumon.seq.at(-1)[1] }); break; }
       P((i, n) => ang - 0.45 + 0.9 * i / (n - 1), 150, ox, oy, 7, 0.35); break;
     case 'nova': hitCircle(u, u.x, u.y - 8, 100, D * 0.9);
       P((i, n) => i / n * Math.PI * 2, 100, u.x, u.y - 10, 10, 0.4); break;
@@ -409,7 +410,7 @@ function update(dt) {
     if (outside) { mx = CX - u.x; my = CY - u.y; damage(u, u.hpMax * zoneDps(zr) * dt, null); }
     if (t) {
       const dx = t.x - u.x, dy = t.y - u.y, d = Math.hypot(dx, dy) || 1, reach = u.ranged ? u.range : u.r + t.r + 4;
-      if (Math.abs(dx) > 2) u.face = dx > 0 ? 1 : -1;
+      if (Math.abs(dx) > 2 && u.state !== 'charge' && u.state !== 'ult') u.face = dx > 0 ? 1 : -1; // hold facing through an attack
       if (!outside) {
         if (d > reach) { mx = dx; my = dy; } else if (u.ranged && d < 55) { mx = -dx; my = -dy; }
         if (u.ult >= ULT.full && d > ultRange(u)) { mx = dx; my = dy; } // close in for short-range ultimates
@@ -679,8 +680,9 @@ function draw(t) {
         drawAD(2, (f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2, Math.max(0.5, Math.min(1.1, (d + 40) / AD_W)), f.x2 < f.x1);
       } else drawAD(fr, f.x2, f.y2 - 6, fr === 4 ? 0.8 + 0.08 * q : 0.75, false, fr === 7 ? 1 - q : 1);
     } else if (f.kind === 'petitfire') { // the cone grows out of Gabumon's mouth toward the target (art points right)
-      const u = f.u, A = animOf(u), k = animScale(u), dir = u.face > 0 ? 1 : -1, fr = (PETIT_FIRE.find(s => f.t < s[1]) || PETIT_FIRE.at(-1))[0];
+      const u = f.u, A = animOf(u); // A is gone if he digivolved mid-cone: then the cone just stops drawing
       if (sfxImg.naturalWidth && A) {
+        const k = animScale(u), dir = u.face > 0 ? 1 : -1, fr = (A.seq.find(s => f.t < s[1]) || A.seq.at(-1))[0];
         const sc = 70 / SFX_W; // the cone is drawn ~70 px long (its hit reaches 150 px) so it doesn't swamp a Rookie
         ctx.save(); ctx.translate(Math.round(u.x + dir * A.mouth[0] * k), Math.round(u.y + A.mouth[1] * k)); ctx.rotate(f.ang);
         if (Math.cos(f.ang) < 0) ctx.scale(1, -1); // keep the art upright when firing left
@@ -787,6 +789,20 @@ if (new URLSearchParams(location.search).has('test')) {
   const gb = mk(0, 0); gb.d = ROSTER.find(d => d.n === 'Gabumon'); const at = (s, st) => { gb.state = s; gb.st = st; return customPose(gb); };
   ok('Gabumon poses: charge F1→F3, Petit Fire F4→F8, then its sprite', at('charge', 0) === 0 && at('charge', DUR.charge * 0.99) === 2
     && at('ult', 0) === 3 && at('ult', 0.84) === 7 && at('idle', 0) === -1); feed.shift(); // drop the test unit's popup and feed line
+  vfxReady.then(() => { // live scene (needs techs.json for Gabumon's cone): his cone KOs the Agumon in front; then an EXP crate digivolves him mid-cone
+    const keep = { units, fxs, drops, feed, time, MODE }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5;
+    const gm = mkUnit(ROSTER.find(d => d.n === 'Gabumon'), CX, CY), front = mkUnit(ROSTER.find(d => d.n === 'Agumon'), CX + 45, CY), back = mkUnit(ROSTER.find(d => d.n === 'Palmon'), CX - 70, CY);
+    front.hp = 1; back.hp = back.hpMax = 99999; gm.ult = 100; gm.face = 1; units = [gm, front, back];
+    let faced = true, threw = null, crate = false;
+    try {
+      for (let i = 0; i < 45; i++) { update(1 / 30); if (gm.state === 'ult' && gm.face !== 1) faced = false; draw(5); }
+      gm.ult = 100; gm.exp = LEVEL_EXP - 1; gm.lvl = EVOLVE_EVERY - 1;
+      for (let i = 0; i < 45; i++) { update(1 / 30); if (!crate && fxs.some(f => f.kind === 'petitfire')) { crate = true; drops.push({ x: gm.x, y: gm.y, kind: 'exp', t: 9 }); } draw(5); }
+    } catch (err) { threw = err.message; }
+    ok('Gabumon keeps facing his cone after it KOs the target', faced && front.dead);
+    ok('digivolving mid-cone ends the attack without freezing the game', crate && !threw && gm.d.n !== 'Gabumon' && customPose(gm) === -1);
+    ({ units, fxs, drops, feed, time, MODE } = keep); over = false;
+  });
 }
 </script>
 </body>
