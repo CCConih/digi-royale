@@ -13,6 +13,7 @@
 <body>
 <canvas id="c" aria-label="Auto battle royale arena"></canvas>
 <script src="roster.js"></script>
+<script src="evo.js"></script>
 <script>
 // Prototype 1: auto battle royale, portrait 9:16. Sprites from digisurvivor-sprites.zip (reference/prototype use only).
 const VIEW = 1.25; // zoom out: >1 shows more arena, so sprites and HUD look smaller on screen
@@ -23,7 +24,7 @@ const N = 35;
 // favours area ultimates far more than the mixed game, so it gets its own sim-tuned numbers.
 const MODES = { mixed: { label: 'MIXED', pool: d => d.st >= 2 && d.st <= 5, n: N },
   // retuned after the ult self-refill fix over 2×450 rookie rounds: every archetype 0.7–1.5× its fair share of wins
-  rookie: { label: 'ROOKIES', pool: d => d.st === 2, n: Infinity, rangedCd: 0.9,
+  rookie: { label: 'ROOKIES', pool: d => d.st === 2, n: Infinity, rangedCd: 0.9, evolve: true,
     kindDmg: { projectile: 1.51, melee: 1.5, beam: 1.69, dash: 1.97, cone: 1.35, chain: 1.03, nova: 0.81, aura: 0.9, orbit: 0.84, meteor: 1.02, boomerang: 2.12 } } }; // beam/meteor/boomerang have 1 Rookie each: their rates are one Digimon's luck
 let MODE = 'mixed';
 // shot damage × attacker dmg, cooldown multiplier, reach in px.
@@ -90,7 +91,7 @@ function newGame() {
       state: 'idle', st: 0, phase: Math.random(), cd: rnd(0.5, 1.5), hitDone: false, flash: 0,
       target: null, retarget: 0, kills: 0, lvl: 1, dead: false, gone: false, ult: rnd(0, 40), ultAt: null };
   });
-  units.forEach(u => sheet(u.d.s));
+  units.forEach(u => { sheet(u.d.s); if (MODES[MODE].evolve) preloadEvo(u.d); });
   shots = []; fxs = []; feed = []; drops = []; nextDrop = 3; time = 0; over = false; endT = 0;
 }
 
@@ -112,8 +113,24 @@ function damage(u, amt, from, ranged = false) { // only melee knocks back and st
       from.hp = Math.min(from.hpMax, from.hp + from.hpMax * 0.4); from.dmg *= 1.1; from.sc *= 1.05; from.r *= 1.05;
     }
     feed.unshift({ txt: from ? `${from.d.n} KO'd ${u.d.n}` : `${u.d.n} fell to the zone`, t: 4 });
+    if (from && !from.dead && MODES[MODE].evolve && from.lvl % EVOLVE_EVERY === 0 && EVO[from.d.id]) evolve(from);
     feed.length = Math.min(feed.length, 5);
   } else if (from && !ranged && !['attack', 'shoot', 'charge', 'ult'].includes(u.state)) setState(u, 'hurt');
+}
+
+// Digivolution (modes with evolve): every EVOLVE_EVERY levels a Digimon becomes one of its 3 options in evo.js
+// (main line first, built by tools/mkevo.py), up to Mega. Stage stats and size step up; level-up gains are kept.
+const EVOLVE_EVERY = 3;
+const DEX = Object.fromEntries(ROSTER.map(d => [d.id, d]));
+const stageHp = st => 80 + 15 * st, stageDmg = st => 8 + 2 * st;
+const preloadEvo = d => (EVO[d.id] || []).forEach(i => sheet(DEX[i].s));
+function evolve(u) {
+  const d = DEX[pick(EVO[u.d.id])], base = d.f.map || d.f.battle, k = stageHp(d.st) / stageHp(u.d.st);
+  u.hpMax = Math.round(u.hpMax * k); u.hp *= k; u.dmg *= stageDmg(d.st) / stageDmg(u.d.st);
+  u.sc = STAGE_HEIGHT[Math.min(d.st, 5)] / base[3] * 1.05 ** (u.lvl - 1); u.r = base[2] * u.sc * 0.4;
+  feed.unshift({ txt: `${u.d.n} digivolved to ${d.n}!`, t: 4 });
+  fxs.push({ kind: 'name', u, txt: 'DIGIVOLVE!', c: '#ffd23a', t: 0, life: 1.4 });
+  u.d = d; u.flash = 0.3; preloadEvo(d);
 }
 
 // Move effects pulled from digisurvivor.com's G.VFX (vfx/*). Per-Digimon technique → palette + sprite shapes.
@@ -598,7 +615,10 @@ if (new URLSearchParams(location.search).has('test')) {
   b.hp = 100; b.shield = 15; damage(b, 10, a); ok('shield absorbs before HP', b.hp === 100 && b.shield === 5);
   damage(b, 10, null); ok('zone damage ignores shield', b.hp === 90 && b.shield === 5);
   b.hp = c.hp = 100; hitArc(a, 0, 0, -Math.PI + 0.05, 0.3, 30, 10); ok('arc across ±180° hits behind only', c.hp < 100 && b.hp === 100);
-  units = real;
+  const agu = ROSTER.find(d => d.n === 'Agumon'), e = mk(0, 0); e.d = agu; e.lvl = 3; e.hpMax = e.hp = stageHp(2);
+  evolve(e); ok('evolve: Rookie becomes one of its 3 Champion options', e.d.st === 3 && EVO[agu.id].includes(e.d.id) && e.hpMax === stageHp(3));
+  ok('every Rookie–Ultimate has 3 next-stage options', ROSTER.filter(d => d.st >= 2 && d.st <= 4).every(d => EVO[d.id].length === 3 && EVO[d.id].every(i => DEX[i].st === d.st + 1)));
+  units = real; fxs = fxs.filter(f => f.u !== e); feed.shift(); // drop the test unit's popup and feed line
 }
 </script>
 </body>

@@ -10,6 +10,7 @@ A single-screen, portrait auto battle royale: 35 random Digimon (Rookie–Mega) 
 ## Files
 - `index.html`: the whole game (one canvas, about 600 lines, no dependencies).
 - `roster.js`: `window.ROSTER`, 436 Digimon `{id, n name, st stage, t type, a attribute, fly, sz, s sheet path, f frame rects [x,y,w,h,anchorX,anchorY] per pose, u signature technique}`. Built by `tools/mkroster.py <digisurvivor-sprites.zip> roster.js <app.min.js>`.
+- `evo.js`: `window.EVO`, `{dex: [3 next-stage dex ids]}` for every Rookie, Champion and Ultimate. Built by `python -I tools/mkevo.py roster.js <app.min.js> evo.js` from a curated main-line table in the script, then the site's `G.DEX` `evo` lists, then random next-stage Digimon. It's seeded, so rebuilds are identical.
 - `sheets/`: 436 sprite sheets, one row of up to 4 poses (map, battle, attack, hit).
 - `vfx/`: `atlas.png` + `atlas.json` (technique effect frames) and `techs.json` (per-Digimon kind, palette, proj/melee/beam/trail, variant). Captured from the site's `G.VFX` in the browser; no script reproduces it.
 
@@ -21,6 +22,7 @@ A single-screen, portrait auto battle royale: 35 random Digimon (Rookie–Mega) 
 - Ultimate: meter fills over time and from damage dealt/taken; fires the Digimon's signature technique in its archetype (projectile, melee, beam, dash, cone, chain, nova, aura, orbit, meteor, boomerang). Ult hits never refill the caster's meter. Fire burns, ice/water slow, electric pierces.
 - Supply drops every 5 s: shield, heal, or full ult.
 - KO = level up: max HP ×1.15, heal 40%, damage ×1.1, size ×1.05.
+- ROOKIES mode only: at levels 3, 6 and 9 a Digimon digivolves into a random one of its 3 `EVO` options (Rookie → Champion → Ultimate → Mega). HP and damage scale by the stage formulas, size follows the new stage, and the technique and type switch to the new form. The ranged/melee role is kept.
 - `KIND_DMG` and `MODES.rookie.kindDmg` are sim-tuned so each archetype wins 0.7–1.5× its fair share.
 
 ## Known gaps
