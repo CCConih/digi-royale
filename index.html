@@ -132,6 +132,18 @@ function customPose(u) {
 // Gabumon "Petit Fire": special-fx.png row 1 frames F4–F8 (cone blast → spread → eruption → embers → dissolve) from his
 // mouth. It reuses his pose timing (ANIM.Gabumon.seq): pose frame n and fx frame n line up, so they can't drift apart.
 const SFX_W = 96, SFX_H = 100, sfxImg = Object.assign(new Image(), { src: 'vfx/special-fx.png' });
+
+// Basic attacks (vfx/basic-vfx.png, cut by tools/mkguide.py basic-vfx): 10 element rows × [projectile, melee], 112×26,
+// all pointing right. Game types map onto the sheet's 10 elements; anything unlisted uses steel.
+const BV_W = 112, BV_H = 26, bvImg = Object.assign(new Image(), { src: 'vfx/basic-vfx.png' });
+const BASIC_ROW = { fire: 0, dragon: 0, water: 1, ice: 2, electric: 3, grass: 4, bug: 4, ground: 5, flying: 6, steel: 7, normal: 7,
+  fairy: 8, psychic: 8, dark: 9, poison: 9 };
+const basicRow = u => BASIC_ROW[u.d.t] ?? 7;
+function drawBasic(row, col, x, y, ang, sc, alpha = 1) { // col 0 projectile, 1 melee; stays upright when aimed left
+  if (!bvImg.naturalWidth) return false;
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(Math.round(x), Math.round(y)); ctx.rotate(ang); if (Math.cos(ang) < 0) ctx.scale(1, -1);
+  ctx.drawImage(bvImg, col * BV_W, row * BV_H, BV_W, BV_H, -BV_W * sc / 2, -BV_H * sc / 2, BV_W * sc, BV_H * sc); ctx.restore(); return true;
+}
 function drawAD(frame, x, y, sc, flip, alpha = 1) {
   if (!adImg.naturalWidth) return;
   ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(Math.round(x), Math.round(y)); if (flip) ctx.scale(-1, 1);
@@ -427,10 +439,11 @@ function update(dt) {
         u.cd = rnd(0.9, 1.3) * (u.ranged ? MODES[MODE].rangedCd || RANGED.cd : 1);
         if (u.ranged) {
           setState(u, 'shoot');
-          shots.push({ x: u.x, y: u.y - 10, vx: dx / d * 220, vy: dy / d * 220, owner: u, dmg: u.dmg * RANGED.dmg, life: 0.8, c: TYPE_COLOR[u.d.t] || '#fff' });
+          shots.push({ x: u.x, y: u.y - 10, vx: dx / d * 220, vy: dy / d * 220, owner: u, dmg: u.dmg * RANGED.dmg, life: 0.8, c: TYPE_COLOR[u.d.t] || '#fff', row: basicRow(u) });
         } else setState(u, 'attack');
       }
-      if (u.state === 'attack' && !u.hitDone && u.st >= DUR.attack * 0.5) { u.hitDone = true; if (d <= reach + 8) damage(t, u.dmg, u); }
+      if (u.state === 'attack' && !u.hitDone && u.st >= DUR.attack * 0.5) { u.hitDone = true;
+        if (d <= reach + 8) { damage(t, u.dmg, u); fxs.push({ kind: 'basicmelee', row: basicRow(u), x: t.x, y: t.y - 10, ang: Math.atan2(dy, dx), t: 0, life: 0.22 }); } }
     }
     // separation so they don't stack
     for (const o of alive) if (o !== u) {
@@ -621,7 +634,9 @@ function draw(t) {
   }
   [...units].sort((a, b) => a.y - b.y).forEach(u => drawUnit(u, t));
   for (const d of drops) if (d.t < DROP.fall) drawCrate(d, t);
-  for (const s of shots) { ctx.fillStyle = s.c; ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2); ctx.fill(); }
+  for (const s of shots) if (!drawBasic(s.row, 0, s.x, s.y, Math.atan2(s.vy, s.vx), 0.28)) { // ~31 px element bolt; dot until the sheet loads
+    ctx.fillStyle = s.c; ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2); ctx.fill();
+  }
   for (const f of fxs) {
     if (f.t < 0 || f.kind === 'later') continue; // not started yet
     const p = f.t / f.life;
@@ -679,6 +694,8 @@ function draw(t) {
         const d = Math.hypot(f.x2 - f.x1, f.y2 - f.y1);
         drawAD(2, (f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2, Math.max(0.5, Math.min(1.1, (d + 40) / AD_W)), f.x2 < f.x1);
       } else drawAD(fr, f.x2, f.y2 - 6, fr === 4 ? 0.8 + 0.08 * q : 0.75, false, fr === 7 ? 1 - q : 1);
+    } else if (f.kind === 'basicmelee') { // element slash on the target, swelling then fading over ~0.2 s
+      drawBasic(f.row, 1, f.x, f.y, f.ang, 0.3 * (0.85 + 0.3 * p), 1 - p * p);
     } else if (f.kind === 'petitfire') { // the cone grows out of Gabumon's mouth toward the target (art points right)
       const u = f.u, A = animOf(u); // A is gone if he digivolved mid-cone: then the cone just stops drawing
       if (sfxImg.naturalWidth && A) {
