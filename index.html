@@ -260,6 +260,8 @@ function ultBlast(h) {
 const SKILL = { fireball: { row: 0, fly: [0, 3], hit: [4, 6] }, fist: { row: 1, fly: [0, 3], hit: [4, 6] },
   ice: { row: 2, fly: [1, 3], hit: [4, 6] }, bolt: { row: 3, hit: [1, 6], ground: true }, vine: { row: 4, hit: [1, 6], ground: true },
   portal: { row: 5, hit: [1, 6] }, barrier: { row: 6, hit: [0, 6] } };
+// size: travel sprites are SKILL_FLY × 64×52 (~26 px wide); impacts scale with the hit radius, capped at ~70 px
+const SKILL_FLY = 0.4, skillHitScale = r => Math.min(1.1, r / 48);
 const SKILL_W = 64, SKILL_H = 52, skillImg = Object.assign(new Image(), { src: 'vfx/skills.png' });
 const CLOSE_KINDS = new Set(['melee', 'dash', 'cone', 'aura', 'orbit', 'nova']);
 function skillOf(u) {
@@ -554,7 +556,7 @@ function draw(t) {
       const x = lerp(f.x1, f.x2, q), y = lerp(f.y1, f.y2, q) - Math.sin(Math.PI * q) * (f.back ? 18 : 6);
       glow(x, y, 14 * sc / 2, f.hit.c, 0.35);
       const dir = Math.atan2(f.y2 - f.y1, f.x2 - f.x1) + (p > 0.5 && f.back ? Math.PI : 0), s = f.hit.skill;
-      if (s && SKILL[s].fly) drawSkill(s, flyFrame(s, f.t), x, y, dir, v.mega ? 0.85 : 0.65);
+      if (s && SKILL[s].fly) drawSkill(s, flyFrame(s, f.t), x, y, dir, SKILL_FLY * (v.mega ? 1.25 : 1));
       else if (v) drawVfx(v.proj, v, f.t * 12, x, y, dir, sc);
     } else if (f.kind === 'beam2') { // straight ray: glowing core plus the technique's beam/projectile sprite tiled along it
       const a = 1 - p * p, x2 = f.x + Math.cos(f.ang) * f.len, y2 = f.y + Math.sin(f.ang) * f.len, shape = f.vis.beam && VFX.shapes[f.vis.beam] ? f.vis.beam : null;
@@ -567,13 +569,13 @@ function draw(t) {
     } else if (f.kind === 'streak') { // dash afterimage trail, impact at the end
       ctx.globalAlpha = 0.6 * (1 - p); ctx.strokeStyle = f.c; ctx.lineWidth = 12 * (1 - p) + 2; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(f.x1, f.y1); ctx.lineTo(lerp(f.x1, f.x2, Math.min(1, p * 1.6)), lerp(f.y1, f.y2, Math.min(1, p * 1.6))); ctx.stroke(); ctx.lineCap = 'butt';
-      if (f.skill && SKILL[f.skill].fly) drawSkill(f.skill, flyFrame(f.skill, f.t), lerp(f.x1, f.x2, Math.min(1, p * 1.6)), lerp(f.y1, f.y2, Math.min(1, p * 1.6)), Math.atan2(f.y2 - f.y1, f.x2 - f.x1), 0.7, 1 - p * p);
+      if (f.skill && SKILL[f.skill].fly) drawSkill(f.skill, flyFrame(f.skill, f.t), lerp(f.x1, f.x2, Math.min(1, p * 1.6)), lerp(f.y1, f.y2, Math.min(1, p * 1.6)), Math.atan2(f.y2 - f.y1, f.x2 - f.x1), SKILL_FLY, 1 - p * p);
       else drawVfx(f.vis.melee && VFX.shapes[f.vis.melee] ? f.vis.melee : f.vis.proj, f.vis, f.t * 12, f.x2, f.y2, 0, 2.2, 1 - p);
     } else if (f.kind === 'swing') { // wide arc in front of the attacker
       const u = f.u, x = u.x, y = u.y - 10, a0 = f.ang - 0.9 + 1.8 * Math.min(1, p * 1.8);
       ctx.globalAlpha = 0.45 * (1 - p); ctx.fillStyle = f.c; ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, f.r, f.ang - 0.9, a0); ctx.closePath(); ctx.fill();
       ctx.globalAlpha = 1;
-      if (f.skill && SKILL[f.skill].fly) drawSkill(f.skill, flyFrame(f.skill, f.t), x + Math.cos(f.ang) * f.r * 0.6 * Math.min(1, p * 2), y + Math.sin(f.ang) * f.r * 0.6 * Math.min(1, p * 2), f.ang, 0.7, 1 - p * p); // punch flies out
+      if (f.skill && SKILL[f.skill].fly) drawSkill(f.skill, flyFrame(f.skill, f.t), x + Math.cos(f.ang) * f.r * 0.6 * Math.min(1, p * 2), y + Math.sin(f.ang) * f.r * 0.6 * Math.min(1, p * 2), f.ang, SKILL_FLY, 1 - p * p); // punch flies out
       else drawVfx(f.vis.melee && VFX.shapes[f.vis.melee] ? f.vis.melee : f.vis.proj, f.vis, f.t * 12, x + Math.cos(a0) * f.r * 0.7, y + Math.sin(a0) * f.r * 0.7, a0, 2.4, 1 - p);
     } else if (f.kind === 'aura') { // pulsing ring around the caster with sprites riding it
       const x = f.u.x, y = f.u.y - 8, r = f.r * (0.5 + 0.5 * Math.sqrt(p));
@@ -587,11 +589,11 @@ function draw(t) {
       const h = 140 * (1 - p);
       ctx.globalAlpha = 0.3 * p; ctx.fillStyle = '#000'; ctx.beginPath(); ctx.ellipse(f.x, f.y + 8, 14 * p, 5 * p, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
       glow(f.x + h * 0.3, f.y - h, 12, VFX.pal[f.vis.pal][3], 0.4);
-      if (f.skill && SKILL[f.skill].fly) drawSkill(f.skill, flyFrame(f.skill, f.t), f.x + h * 0.3, f.y - h, Math.PI / 2 + 0.3, 0.7);
+      if (f.skill && SKILL[f.skill].fly) drawSkill(f.skill, flyFrame(f.skill, f.t), f.x + h * 0.3, f.y - h, Math.PI / 2 + 0.3, SKILL_FLY);
       else drawVfx(f.vis.proj, f.vis, f.t * 12, f.x + h * 0.3, f.y - h, Math.PI / 2 + 0.3, f.vis.mega ? 3 : 2.4);
     } else if (f.kind === 'skill') { // one-shot impact from the skill sheet, sized to the hit radius; follows its unit if given
       const [a, b] = SKILL[f.s].hit, x = f.u ? f.u.x : f.x, y = f.u ? f.u.y - (SKILL[f.s].ground ? 0 : 12) : f.y + (SKILL[f.s].ground ? 8 : 0);
-      drawSkill(f.s, a + Math.min(b - a, Math.floor(p * (b - a + 1))), x, y, 0, Math.min(2.4, f.r / 26), p > 0.8 ? (1 - p) * 5 : 1);
+      drawSkill(f.s, a + Math.min(b - a, Math.floor(p * (b - a + 1))), x, y, 0, skillHitScale(f.r), p > 0.8 ? (1 - p) * 5 : 1);
     } else if (f.kind === 'zap') {
       zigzag(f.x1, f.y1, f.x2, f.y2, f.c, 1 - p);
     } else if (f.kind === 'impact') {
