@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Digi Royale v0.7a</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0f14;overflow:hidden;touch-action:manipulation}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{image-rendering:pixelated;display:block}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Auto battle royale arena"></canvas>
+<script src="roster.js"></script>
+<script>
+// Prototype 1: auto battle royale, portrait 9:16. Sprites from digisurvivor-sprites.zip (reference/prototype use only).
+const VIEW = 1.25; // zoom out: >1 shows more arena, so sprites and HUD look smaller on screen
+const W = 360 * VIEW, H = 640 * VIEW, TOP = 56, BOT = H - 24, CX = W / 2, CY = (TOP + BOT) / 2;
+const N = 35;
+// Roster modes, toggled by the HUD button: random mix of Rookie–Mega, or every Rookie at once.
+// A mode may override the ultimate damage table (kindDmg) and ranged cooldown (rangedCd): a packed 60-Rookie field
+// favours area ultimates far more than the mixed game, so it gets its own sim-tuned numbers.
+const MODES = { mixed: { label: 'MIXED', pool: d => d.st >= 2 && d.st <= 5, n: N },
+  // retuned after the ult self-refill fix over 2×450 rookie rounds: every archetype 0.7–1.5× its fair share of wins
+  rookie: { label: 'ROOKIES', pool: d => d.st === 2, n: Infinity, rangedCd: 0.9,
+    kindDmg: { projectile: 1.51, melee: 1.5, beam: 1.69, dash: 1.97, cone: 1.35, chain: 1.03, nova: 0.81, aura: 0.9, orbit: 0.84, meteor: 1.02, boomerang: 2.12 } } }; // beam/meteor/boomerang have 1 Rookie each: their rates are one Digimon's luck
+let MODE = 'mixed';
+// shot damage × attacker dmg, cooldown multiplier, reach in px.
+// cd tuned by 300 sim rounds with ultimates (N 35, VIEW 1.25, start circle W/2): ranged win 34% vs 34% of the field.
+// Very sensitive: retune whenever N, VIEW, the zone or ULT change.
+let RANGED = { dmg: 0.5, cd: 0.8, range: 110 };
+const STAGE_HEIGHT ={ 2: 26, 3: 36, 4: 46, 5: 58 }; // px tall: Rookie < Champion < Ultimate < Mega+
+// shortcut: one-shot durations guessed; the real ones are in G.Sprites `r` map of app.min.js, swap in once recovered.
+const DUR = { attack: 0.35, shoot: 0.25, hurt: 0.3, faint: 0.8, dissolve: 0.5, charge: 0.55, ult: 0.4 };
+// Ultimate = each Digimon's signature technique (name from the site's G.DEX tech). Its shape follows the tech's archetype (see fireUlt).
+// Meter fills over time and from damage dealt/taken; at full it charges, then blasts the target's area.
+const ULT = { full: 100, perSec: 5, dealt: 0.6, taken: 0.4, range: 150, radius: 42, mult: 2 }; // mult × attacker dmg
+const TYPE_COLOR = { fire:'#ff6a2b', water:'#3aa8ff', ice:'#a8ecff', electric:'#ffe23a', grass:'#5bd65b', dark:'#a05cff',
+  fairy:'#ff8de0', steel:'#c8d0dc', flying:'#bfe6ff', ground:'#c9a066', poison:'#b04cff', bug:'#a6d13a', normal:'#ffffff' };
+const ZONE_R0 = W / 2, ZONE_TIME = 70; // starts as the largest circle that fits the arena width, shrinks nonstop to 0 over ZONE_TIME seconds
+const ZONE_DPS_MIN = 0.01, ZONE_DPS_MAX = 0.10; // share of max HP per second, full circle → fully closed
+
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const fx = document.createElement('canvas'), fctx = fx.getContext('2d'); // scratch for hit flash
+let scale = 1;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  scale = Math.min(innerWidth / W, innerHeight / H);
+  cv.style.width = W * scale + 'px'; cv.style.height = H * scale + 'px';
+  cv.width = Math.round(W * scale * dpr); cv.height = Math.round(H * scale * dpr);
+  ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0); ctx.imageSmoothingEnabled = false;
+}
+addEventListener('resize', resize); resize();
+
+// procedural ground, rendered once
+const ground = document.createElement('canvas'); ground.width = W; ground.height = BOT - TOP;
+{ const g = ground.getContext('2d');
+  for (let y = 0; y < ground.height; y += 8) for (let x = 0; x < W; x += 8) {
+    const n = (Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1;
+    g.fillStyle = ((x + y) / 8) % 2 ? '#3f7d3a' : '#43843e'; g.fillRect(x, y, 8, 8);
+    if (Math.abs(n) > 0.82) { g.fillStyle = '#5aa04f'; g.fillRect(x + 3, y + 2, 1, 3); g.fillRect(x + 5, y + 3, 1, 2); }
+  } }
+
+const sheets = {};
+function sheet(path) { return sheets[path] || (sheets[path] = Object.assign(new Image(), { src: path })); }
+
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.random() * a.length | 0];
+const lerp = (a, b, t) => a + (b - a) * t;
+
+let units, shots, fxs, feed, time, speed = 1, over, endT, drops, nextDrop;
+// Supply drops: a crate parachutes into the zone every few seconds holding one of three items.
+// shield absorbs attack damage (not the zone) for a while, heal restores HP, ult fills the ultimate meter.
+const DROP = { every: 5, fall: 0.9, life: 14, grab: 90, shield: 0.4, shieldTime: 8, heal: 0.4 };
+const DROP_KIND = { shield: { c: '#4fd6ff', txt: 'SHIELD!' }, heal: { c: '#5be36b', txt: '+HEAL' }, ult: { c: '#ffd23a', txt: 'ULT READY!' } };
+
+function newGame() {
+  const pool = ROSTER.filter(MODES[MODE].pool), n = Math.min(MODES[MODE].n, pool.length);
+  const chosen = [];
+  while (chosen.length < n) { const d = pick(pool); if (!chosen.includes(d)) chosen.push(d); }
+  units = chosen.map((d, i) => {
+    const a = i / n * Math.PI * 2, rr = rnd(0.45, 0.9) * ZONE_R0; // spawn inside the starting circle
+    const base = d.f.map || d.f.battle;
+    const sc = STAGE_HEIGHT[Math.min(d.st, 5)] / base[3]; // on-screen height set by stage, not by sprite size
+    const ranged = d.a === 'Data' || ((d.a === 'Free' || d.a === 'Unknown') && Math.random() < 0.5);
+    return { d, x: CX + Math.cos(a) * rr, y: CY + Math.sin(a) * rr, vx: 0, vy: 0,
+      hpMax: 80 + 15 * d.st, hp: 80 + 15 * d.st, dmg: 8 + 2 * d.st, ranged, range: ranged ? RANGED.range : 0,
+      spd: rnd(28, 38) * (d.fly ? 1.15 : 1) * (ranged ? 1.05 : 1), sc, r: base[2] * sc * 0.4, face: Math.cos(a) > 0 ? -1 : 1,
+      state: 'idle', st: 0, phase: Math.random(), cd: rnd(0.5, 1.5), hitDone: false, flash: 0,
+      target: null, retarget: 0, kills: 0, lvl: 1, dead: false, gone: false, ult: rnd(0, 40), ultAt: null };
+  });
+  units.forEach(u => sheet(u.d.s));
+  shots = []; fxs = []; feed = []; drops = []; nextDrop = 3; time = 0; over = false; endT = 0;
+}
+
+const zoneR = t => Math.max(0, ZONE_R0 * (1 - t / ZONE_TIME));
+const zoneDps = r => lerp(ZONE_DPS_MAX, ZONE_DPS_MIN, Math.min(1, r / ZONE_R0)); // smaller zone hurts more
+
+function setState(u, s) { u.state = s; u.st = 0; u.hitDone = false; if (s !== 'ult') u.dash = null; }
+
+function damage(u, amt, from, ranged = false) { // only melee knocks back and staggers
+  if (u.dead) return;
+  if (from && u.shield > 0) { const a = Math.min(u.shield, amt); u.shield -= a; amt -= a; if (amt <= 0) { u.flash = 0.06; return; } }
+  u.hp -= amt;
+  if (from) { u.flash = 0.12; u.ult += amt * ULT.taken; from.ult += amt * ULT.dealt; } // zone ticks don't flash, stagger or charge ults
+  if (from && !ranged) { const dx = u.x - from.x, dy = u.y - from.y, l = Math.hypot(dx, dy) || 1; u.vx += dx / l * 60; u.vy += dy / l * 60; }
+  if (u.hp <= 0) {
+    u.hp = 0; u.dead = true; setState(u, 'faint');
+    if (from && !from.dead) { // level up on KO
+      from.kills++; from.lvl++; from.hpMax = Math.round(from.hpMax * 1.15);
+      from.hp = Math.min(from.hpMax, from.hp + from.hpMax * 0.4); from.dmg *= 1.1; from.sc *= 1.05; from.r *= 1.05;
+    }
+    feed.unshift({ txt: from ? `${from.d.n} KO'd ${u.d.n}` : `${u.d.n} fell to the zone`, t: 4 });
+    feed.length = Math.min(feed.length, 5);
+  } else if (from && !ranged && !['attack', 'shoot', 'charge', 'ult'].includes(u.state)) setState(u, 'hurt');
+}
+
+// Move effects pulled from digisurvivor.com's G.VFX (vfx/*). Per-Digimon technique → palette + sprite shapes.
+// shortcut: needs the http server (fetch); opened as file:// it falls back to the plain circle blast.
+let VFX = null;
+Promise.all(['vfx/atlas.json', 'vfx/techs.json'].map(p => fetch(p).then(r => r.json())))
+  .then(([a, t]) => { VFX = { rects: a.rects, shapes: a.shapes, pal: a.palettes, techs: t, img: sheet('vfx/atlas.png') }; })
+  .catch(() => {});
+const visOf = u => VFX && VFX.techs[u.d.id];
+const ultColor = u => { const v = visOf(u); return v && VFX.pal[v.pal] ? VFX.pal[v.pal][3] : TYPE_COLOR[u.d.t] || '#fff'; };
+
+// Ultimate delivery follows the technique's archetype (techs.json `kind`, from the site's G.DEX tech[1]).
+// Close-range kinds must get near before they fire; everyone walks in once the meter is full.
+const ULT_RANGE = { melee: 60, aura: 70, orbit: 70, nova: 90, dash: 140 }; // others: ULT.range
+// damage × per archetype: area kinds hit many in a crowd, so they hit softer (tuned by sim, see ULT notes)
+// Retuned after the ult self-refill fix (1200 + 800 mixed rounds): every archetype 0.67–1.46× its fair share of wins; small kinds stay noisy ±30%.
+let KIND_DMG = { projectile: 1.26, melee: 1.54, beam: 1.35, dash: 1.58, cone: 1.45, chain: 0.85, nova: 0.79, aura: 0.85, orbit: 1.25, meteor: 0.88, boomerang: 2.42 };
+const ultKind = u => { const v = visOf(u); return v ? v.kind : 'projectile'; };
+// Status on ultimate hits, by first type, same rules as the site's G.Tech: fire burns, ice/water slow, electric pierces +1.
+// Burn: stacks ≤8, 3 s, ticks every 0.5 s (site: 1.6 × stacks; here scaled to our HP as BURN_TICK × attacker dmg).
+// Slow: speed × (1 − slow) for SLOW_TIME s. Pierce: projectile flies on to the next enemy, chain gets an extra hop.
+const STATUS = { fire: { burn: 1 }, ice: { slow: 0.5 }, water: { slow: 0.3 }, electric: { pierce: 1 } };
+let BURN_TICK = 0.07, SLOW_TIME = 1.8; // sim-tuned: 0.12 / 1.2 gave fire 1.5× and ice/water 0.79× their fair win share
+const statusOf = u => STATUS[u.d.t] || {};
+function ultHit(o, dmg, u) { // damage + the attacker's status effect
+  if (o.dead) return;
+  const m = u.ult; damage(o, dmg, u); u.ult = m; // ult hits never refill the caster's own meter
+  const s = statusOf(u);
+  if (s.burn && !o.dead) { o.burn = Math.min(8, (o.burn || 0) + s.burn); o.burnT = 3; o.burnFrom = u; }
+  if (s.slow && !o.dead) { o.slow = Math.max(o.slow || 0, s.slow); o.slowT = SLOW_TIME; }
+}
+const ultRange = u => ULT_RANGE[ultKind(u)] || ULT.range;
+const foes = u => units.filter(o => !o.dead && o !== u);
+const hitCircle = (u, x, y, r, dmg) => foes(u).forEach(o => { if (Math.hypot(o.x - x, o.y - 8 - y) < r + o.r) ultHit(o, dmg, u); });
+function hitArc(u, x, y, ang, half, r, dmg) {
+  for (const o of foes(u)) {
+    const dx = o.x - x, dy = o.y - 8 - y, da = Math.abs(((Math.atan2(dy, dx) - ang + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+    if (Math.hypot(dx, dy) < r + o.r && da < half) ultHit(o, dmg, u);
+  }
+}
+function hitLine(u, x, y, ang, len, w, dmg) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  for (const o of foes(u)) {
+    const dx = o.x - x, dy = o.y - 8 - y, along = dx * c + dy * s;
+    if (along > -o.r && along < len + o.r && Math.abs(-dx * s + dy * c) < w + o.r) ultHit(o, dmg, u);
+  }
+}
+const later = (delay, apply) => fxs.push({ kind: 'later', t: -delay, life: 0, apply }); // runs apply() after delay
+
+function fireUlt(u) {
+  const t = u.ultAt, tx = t.x, ty = t.y - 8; // aims where the target is now, even if it just fell
+  const v = visOf(u), kind = ultKind(u), c = ultColor(u), D = u.dmg * ULT.mult * ((MODES[MODE].kindDmg || KIND_DMG)[kind] || 1);
+  const ox = u.x + u.face * 6, oy = u.y - 12, ang = Math.atan2(ty - oy, tx - ox), dist = Math.hypot(tx - ox, ty - oy);
+  const hit = { owner: u, x: tx, y: ty, r: ULT.radius * (0.8 + 0.1 * u.d.st), dmg: D, vis: v, c };
+  const P = (a, r, x, y, n, life) => { for (let i = 0; i < n; i++) fxs.push({ kind: 'shard', x, y, a: a(i, n), r, vis: v, t: 0, life }); };
+  u.ult = 0; u.ultAt = null;
+  if (!v) { fxs.push({ kind: 'beam', x1: ox, y1: oy, x2: tx, y2: ty, c, t: 0, life: 0.18 }); ultBlast(hit); return; }
+  switch (kind) {
+    case 'beam': { const len = 210; hitLine(u, ox, oy, ang, len, 12, D);
+      fxs.push({ kind: 'beam2', x: ox, y: oy, ang, len, vis: v, c, t: 0, life: 0.4 }); break; }
+    case 'dash': { const len = Math.min(dist + 40, 170); hitLine(u, u.x, u.y - 8, ang, len, u.r + 6, D);
+      u.dash = { x0: u.x, y0: u.y, x1: u.x + Math.cos(ang) * len, y1: u.y + Math.sin(ang) * len };
+      fxs.push({ kind: 'streak', x1: u.x, y1: u.y - 10, x2: u.dash.x1, y2: u.dash.y1 - 10, vis: v, c, t: 0, life: 0.35 }); break; }
+    case 'melee': hitArc(u, u.x, u.y - 8, ang, 0.9, 64, D * 1.2);
+      fxs.push({ kind: 'swing', u, ang, r: 64, vis: v, c, t: 0, life: 0.3 }); break;
+    case 'cone': hitArc(u, ox, oy, ang, 0.45, 150, D);
+      P((i, n) => ang - 0.45 + 0.9 * i / (n - 1), 150, ox, oy, 7, 0.35); break;
+    case 'nova': hitCircle(u, u.x, u.y - 8, 100, D * 0.9);
+      P((i, n) => i / n * Math.PI * 2, 100, u.x, u.y - 10, 10, 0.4); break;
+    case 'aura': hitCircle(u, u.x, u.y - 8, 80, D);
+      fxs.push({ kind: 'aura', u, r: 80, vis: v, c, t: 0, life: 0.6 }); break;
+    case 'orbit': hitCircle(u, u.x, u.y - 8, 70, D);
+      fxs.push({ kind: 'orbit', u, r: 44, vis: v, c, t: 0, life: 1 }); break;
+    case 'meteor': for (let i = 0; i < 3; i++) {
+        const mx = tx + rnd(-22, 22), my = ty + rnd(-16, 16), r = 30;
+        fxs.push({ kind: 'meteor', x: mx, y: my, vis: v, t: -i * 0.12, life: 0.35 });
+        later(i * 0.12 + 0.35, () => ultBlast({ ...hit, x: mx, y: my, r, dmg: D * 0.55 }));
+      } break;
+    case 'chain': { let from = { x: ox, y: oy }, cur = t; const done = new Set();
+      for (let i = 0; i < 4 + (statusOf(u).pierce || 0) && cur; i++) {
+        const o = cur, f = from; done.add(o);
+        later(i * 0.1, () => { ultHit(o, D * 0.8, u); fxs.push({ kind: 'zap', x1: f.x, y1: f.y, x2: o.x, y2: o.y - 10, c, t: 0, life: 0.22 }); });
+        from = { x: o.x, y: o.y - 10 };
+        cur = foes(u).filter(n => !done.has(n) && Math.hypot(n.x - o.x, n.y - o.y) < 140).sort((a, b) => Math.hypot(a.x - o.x, a.y - o.y) - Math.hypot(b.x - o.x, b.y - o.y))[0];
+      } break; }
+    case 'boomerang': hitLine(u, ox, oy, ang, dist + 20, 14, D);
+      fxs.push({ kind: 'ultshot', x1: ox, y1: oy, x2: tx, y2: ty, back: true, hit, t: 0, life: 0.7 }); break;
+    default: // projectile
+      hit.pierce = statusOf(u).pierce || 0; hit.ang = ang;
+      fxs.push({ kind: 'ultshot', x1: ox, y1: oy, x2: tx, y2: ty, hit, t: 0, life: Math.max(0.12, Math.min(0.45, dist / 380)) });
+  }
+}
+
+function ultBlast(h) {
+  const struck = foes(h.owner).filter(o => Math.hypot(o.x - h.x, o.y - 8 - h.y) < h.r + o.r);
+  struck.forEach(o => ultHit(o, h.dmg, h.owner));
+  if (h.pierce > 0) { // pierce: carry on along the same heading to the next enemy not just hit, at 85% damage (site chain falloff)
+    const c = Math.cos(h.ang), s = Math.sin(h.ang);
+    const next = foes(h.owner).filter(o => !struck.includes(o)).map(o => ({ o, along: (o.x - h.x) * c + (o.y - 8 - h.y) * s, side: Math.abs(-(o.x - h.x) * s + (o.y - 8 - h.y) * c) }))
+      .filter(e => e.along > 0 && e.along < 130 && e.side < 40).sort((a, b) => a.along - b.along)[0];
+    if (next) fxs.push({ kind: 'ultshot', x1: h.x, y1: h.y, x2: next.o.x, y2: next.o.y - 8, hit: { ...h, x: next.o.x, y: next.o.y - 8, dmg: h.dmg * 0.85, pierce: h.pierce - 1 }, t: 0, life: Math.max(0.1, next.along / 380) });
+  }
+  fxs.push({ kind: 'blast', x: h.x, y: h.y, r: h.r, c: h.c, t: 0, life: 0.45 });
+  if (h.vis) {
+    fxs.push({ kind: 'impact', x: h.x, y: h.y, r: h.r, vis: h.vis, t: 0, life: 0.4 });
+    for (let i = 0; i < 6; i++) fxs.push({ kind: 'shard', x: h.x, y: h.y, a: i / 6 * Math.PI * 2 + rnd(-0.2, 0.2), r: h.r, vis: h.vis, t: 0, life: 0.35 });
+  }
+}
+
+// draw one atlas sprite centred at x,y; returns false if it isn't available
+function drawVfx(shape, v, frame, x, y, ang, sc, alpha = 1) {
+  const r = VFX && shape && VFX.rects[`${shape}|${v.pal}|${v.variant}`];
+  if (!r || !VFX.img.complete) return false;
+  const [ry, w, h, n] = r, f = (Math.floor(frame) % n + n) % n, S = VFX.shapes[shape];
+  ang = S.spin ? time * 10 : S.dir ? Math.round(ang / (Math.PI / 8)) * (Math.PI / 8) : 0; // like the site: dir snaps to 22.5°
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(Math.round(x), Math.round(y)); if (ang) ctx.rotate(ang);
+  ctx.drawImage(VFX.img, f * (w + 1), ry, w, h, -w * sc / 2, -h * sc / 2, w * sc, h * sc);
+  ctx.restore(); return true;
+}
+function zigzag(x1, y1, x2, y2, c, a) { // jagged lightning, for chain and non-sprite beams
+  const n = Math.max(3, Math.hypot(x2 - x1, y2 - y1) / 10 | 0), nx = -(y2 - y1), ny = x2 - x1, l = Math.hypot(nx, ny) || 1;
+  ctx.globalAlpha = a; ctx.beginPath(); ctx.moveTo(x1, y1);
+  for (let i = 1; i < n; i++) { const j = rnd(-5, 5); ctx.lineTo(lerp(x1, x2, i / n) + nx / l * j, lerp(y1, y2, i / n) + ny / l * j); }
+  ctx.lineTo(x2, y2); ctx.strokeStyle = c; ctx.lineWidth = 4; ctx.stroke(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.globalAlpha = 1;
+}
+function glow(x, y, r, c, a) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, c); g.addColorStop(1, 'transparent');
+  ctx.globalAlpha = a; ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2); ctx.globalAlpha = 1;
+}
+
+function updateDrops(dt, zr, alive) {
+  if (time >= nextDrop && zr > 40) {
+    nextDrop = time + DROP.every * rnd(0.7, 1.3);
+    const a = rnd(0, Math.PI * 2), r = Math.sqrt(Math.random()) * zr * 0.75;
+    drops.push({ x: Math.max(20, Math.min(W - 20, CX + Math.cos(a) * r)), y: Math.max(TOP + 30, Math.min(BOT - 10, CY + Math.sin(a) * r)),
+      kind: pick(Object.keys(DROP_KIND)), t: 0 });
+  }
+  for (const d of drops) {
+    d.t += dt;
+    if (d.t < DROP.fall) continue;
+    const u = alive.find(u => Math.hypot(u.x - d.x, u.y - d.y) < u.r + 8);
+    if (!u) continue;
+    d.taken = true;
+    if (d.kind === 'shield') { u.shield = u.hpMax * DROP.shield; u.shieldMax = u.shield; u.shieldT = DROP.shieldTime; }
+    else if (d.kind === 'heal') u.hp = Math.min(u.hpMax, u.hp + u.hpMax * DROP.heal);
+    else u.ult = ULT.full;
+    fxs.push({ kind: 'name', u, txt: DROP_KIND[d.kind].txt, c: DROP_KIND[d.kind].c, t: 0, life: 1.2 },
+             { kind: 'blast', x: d.x, y: d.y - 6, r: 22, c: DROP_KIND[d.kind].c, t: 0, life: 0.35 });
+  }
+  drops = drops.filter(d => !d.taken && d.t < DROP.fall + DROP.life);
+}
+
+function update(dt) {
+  time += dt;
+  const zr = zoneR(time), alive = units.filter(u => !u.dead);
+  updateDrops(dt, zr, alive);
+  for (const u of units) {
+    u.st += dt; u.flash = Math.max(0, u.flash - dt);
+    if (u.dead) { if (u.st > DUR.faint + DUR.dissolve) u.gone = true; continue; }
+    u.ult = Math.min(ULT.full, u.ult + ULT.perSec * dt);
+    if (u.slowT > 0 && (u.slowT -= dt) <= 0) u.slow = 0;
+    if (u.shieldT > 0 && (u.shieldT -= dt) <= 0) u.shield = 0;
+    if (u.burn > 0) {
+      u.burnT -= dt; u.burnTick = (u.burnTick || 0.5) - dt;
+      if (u.burnTick <= 0) { u.burnTick = 0.5; damage(u, u.burn * BURN_TICK * u.burnFrom.dmg, u.burnFrom, true); } // no stagger; KO credits the burner
+      if (u.burnT <= 0) u.burn = 0;
+      if (u.dead) continue;
+    }
+    if (u.state === 'charge' && u.st >= DUR.charge) { fireUlt(u); setState(u, 'ult'); }
+    else if (u.state in DUR && u.st >= DUR[u.state]) setState(u, 'idle');
+
+    // pick target: nearest living enemy
+    if ((u.retarget -= dt) <= 0 || !u.target || u.target.dead) {
+      u.retarget = 0.5; u.target = null; let best = 1e9;
+      for (const o of alive) if (o !== u) { const d = Math.hypot(o.x - u.x, o.y - u.y); if (d < best) { best = d; u.target = o; } }
+    }
+    const t = u.target, outside = Math.hypot(u.x - CX, u.y - CY) > zr;
+    let mx = 0, my = 0;
+    if (outside) { mx = CX - u.x; my = CY - u.y; damage(u, u.hpMax * zoneDps(zr) * dt, null); }
+    if (t) {
+      const dx = t.x - u.x, dy = t.y - u.y, d = Math.hypot(dx, dy) || 1, reach = u.ranged ? u.range : u.r + t.r + 4;
+      if (Math.abs(dx) > 2) u.face = dx > 0 ? 1 : -1;
+      if (!outside) {
+        if (d > reach) { mx = dx; my = dy; } else if (u.ranged && d < 55) { mx = -dx; my = -dy; }
+        if (u.ult >= ULT.full && d > ultRange(u)) { mx = dx; my = dy; } // close in for short-range ultimates
+        // grab a landed crate if one is close and nearer than the fight
+        let best = null, bd = DROP.grab;
+        for (const p of drops) if (p.t >= DROP.fall) { const pd = Math.hypot(p.x - u.x, p.y - u.y); if (pd < bd && pd < d) { bd = pd; best = p; } }
+        if (best) { mx = best.x - u.x; my = best.y - u.y; }
+      }
+      u.cd -= dt * (1 - (u.slow || 0)); // slow also drags attack speed (site only slows movement; that barely mattered in a brawl)
+      if (u.ult >= ULT.full && d <= ultRange(u) &&(u.state === 'idle' || u.state === 'walk')) {
+        setState(u, 'charge'); u.ultAt = t;
+        fxs.push({ kind: 'name', u, txt: u.d.u + '!', c: ultColor(u), t: 0, life: 1.4 });
+      } else if (d <= reach + 2 && u.cd <= 0 && (u.state === 'idle' || u.state === 'walk')) {
+        u.cd = rnd(0.9, 1.3) * (u.ranged ? MODES[MODE].rangedCd || RANGED.cd : 1);
+        if (u.ranged) {
+          setState(u, 'shoot');
+          shots.push({ x: u.x, y: u.y - 10, vx: dx / d * 220, vy: dy / d * 220, owner: u, dmg: u.dmg * RANGED.dmg, life: 0.8, c: TYPE_COLOR[u.d.t] || '#fff' });
+        } else setState(u, 'attack');
+      }
+      if (u.state === 'attack' && !u.hitDone && u.st >= DUR.attack * 0.5) { u.hitDone = true; if (d <= reach + 8) damage(t, u.dmg, u); }
+    }
+    // separation so they don't stack
+    for (const o of alive) if (o !== u) {
+      const dx = u.x - o.x, dy = u.y - o.y, d = Math.hypot(dx, dy);
+      if (d > 0 && d < u.r + o.r) { u.x += dx / d * (u.r + o.r - d) * 0.5; u.y += dy / d * (u.r + o.r - d) * 0.5; }
+    }
+    const ml = Math.hypot(mx, my), busy = !outside && ['attack', 'hurt', 'charge', 'ult'].includes(u.state); // never stuck in the storm
+    if (ml > 0 && !busy) {
+      const sp = u.spd * (1 - (u.slow || 0));
+      u.x += mx / ml * sp * dt; u.y += my / ml * sp * dt;
+      if (u.state === 'idle') u.state = 'walk';
+      u.phase += 2.6 * dt;
+    } else if (u.state === 'walk') u.state = 'idle';
+    if (u.dash) { const q = Math.min(1, u.st / 0.25); u.x = lerp(u.dash.x0, u.dash.x1, q); u.y = lerp(u.dash.y0, u.dash.y1, q); }
+    u.x += u.vx * dt; u.y += u.vy * dt; u.vx *= Math.pow(0.002, dt); u.vy *= Math.pow(0.002, dt);
+    u.x = Math.max(12, Math.min(W - 12, u.x)); u.y = Math.max(TOP + 20, Math.min(BOT - 4, u.y));
+  }
+  for (const s of shots) {
+    s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt;
+    for (const u of units) if (!u.dead && u !== s.owner && Math.hypot(u.x - s.x, u.y - 10 - s.y) < u.r + 3) { damage(u, s.dmg, s.owner, true); s.life = 0; break; }
+  }
+  shots = shots.filter(s => s.life > 0);
+  fxs.forEach(f => {
+    f.t += dt;
+    if (f.done || f.t < f.life) return;
+    if (f.kind === 'ultshot' && !f.back) { f.done = true; ultBlast(f.hit); }
+    else if (f.kind === 'later') { f.done = true; f.apply(); }
+  });
+  fxs = fxs.filter(f => f.t < f.life);
+  units = units.filter(u => !u.gone);
+  feed.forEach(f => f.t -= dt); feed = feed.filter(f => f.t > 0);
+  if (!over && units.filter(u => !u.dead).length <= 1) { over = true; endT = 0; }
+  if (over) endT += dt;
+}
+
+// procedural animator, formulas from ANIMATION_NOTES.md
+function anim(u, t) {
+  const f = u.face, p = u.st / (DUR[u.state] || 1);
+  let ox = 0, oy = 0, sy = 1, alpha = 1, pose = 'map';
+  switch (u.state) {
+    case 'idle': oy = -Math.round((Math.sin(2.4 * t + u.phase * 9) + 1) / 2); sy = 1 + 0.015 * Math.sin(2.4 * t + u.phase * 9); break;
+    case 'walk': { const s = Math.sin(u.phase * Math.PI); ox = Math.round(0.8 * s); oy = -Math.round(2 * Math.abs(s)); sy = 0.95 + 0.07 * Math.abs(s); break; }
+    case 'attack': pose = 'attack'; ox = 4 * f * Math.sin(Math.PI * p); oy = -Math.sin(Math.PI * p); break;
+    case 'shoot': pose = 'attack'; ox = -2 * f * Math.sin(Math.PI * p); break;
+    case 'charge': pose = 'battle'; ox = Math.sin(70 * t); sy = 1 - 0.08 * Math.sin(Math.PI * p); break;
+    case 'ult': pose = 'attack'; ox = 6 * f * Math.sin(Math.PI * p); oy = -2 * Math.sin(Math.PI * p); break;
+    case 'hurt': pose = 'hit'; ox = -2 * f * (1 - p); sy = 1 - 0.1 * (1 - p); break;
+    case 'faint': pose = 'hit';
+      if (p < 0.3) { ox = -2 * f * p / 0.3; oy = -3 * Math.sin(p / 0.3 * Math.PI); }
+      else sy = 1 - 0.28 * Math.min(1, (p - 0.3) / 0.4);
+      if (u.st > DUR.faint) alpha = 1 - (u.st - DUR.faint) / DUR.dissolve;
+      break;
+  }
+  return { ox, oy, sy, alpha: Math.max(0, alpha), pose };
+}
+
+function frameFor(u, pose) {
+  const F = u.d.f, fr = F[pose] || F.battle || F.map;
+  // big poses get shrunk to the map pose's size so the character doesn't balloon mid-attack
+  const big = F.battle || F.hit || F.attack; // some sheets have no battle pose: match the other big poses instead
+  const k = F.map && fr !== F.map ? F.map[3] / big[3] : 1; // no map pose: sizing already uses battle
+  return { fr, k };
+}
+
+function drawUnit(u, t) {
+  const a = anim(u, t), { fr, k } = frameFor(u, a.pose), img = sheet(u.d.s);
+  const [sx, sy0, w, h, ax, ay] = fr, s = u.sc * k;
+  const hover = u.d.fly ? 10 + 2 * Math.sin(2 * t + u.phase * 7) : 0;
+  ctx.globalAlpha = a.alpha * 0.35; ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.ellipse(u.x, u.y, u.r * (u.d.fly ? 0.8 : 1.1), u.r * 0.35, 0, 0, Math.PI * 2); ctx.fill();
+  if (!u.dead && (u.burn > 0 || u.slow > 0)) { // status pool under the feet, like the site's burn ellipse
+    ctx.globalAlpha = 0.4 + 0.1 * Math.sin(t * 12); ctx.fillStyle = u.burn > 0 ? '#ff8a3d' : '#8fe3ff';
+    ctx.beginPath(); ctx.ellipse(u.x, u.y, u.r * 1.2, u.r * 0.45, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = a.alpha;
+  if (img.complete && img.naturalWidth) {
+    ctx.save();
+    ctx.translate(u.x + a.ox * u.sc, u.y + a.oy * u.sc - hover);
+    ctx.scale(u.face > 0 ? -s : s, s * a.sy); // sheets face left as drawn
+    ctx.drawImage(img, sx, sy0, w, h, -ax, -ay, w, h);
+    if (u.flash > 0) {
+      if (fx.width < w || fx.height < h) { fx.width = Math.max(fx.width, w); fx.height = Math.max(fx.height, h); } // grow only: resizing reallocates
+      fctx.clearRect(0, 0, fx.width, fx.height); fctx.drawImage(img, sx, sy0, w, h, 0, 0, w, h);
+      fctx.globalCompositeOperation = 'source-in'; fctx.fillStyle = '#fff'; fctx.fillRect(0, 0, w, h); fctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = a.alpha * Math.min(1, u.flash / 0.06); ctx.drawImage(fx, -ax, -ay);
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  if (!u.dead && u.burn > 0) for (let i = 0; i < 2 + Math.min(4, u.burn); i++) { // embers rising
+    const q = (t * 1.6 + i * 0.37 + u.phase) % 1;
+    ctx.globalAlpha = 1 - q; ctx.fillStyle = q < 0.4 ? '#ffe28a' : '#ff6a1f';
+    ctx.fillRect(Math.round(u.x + Math.sin(i * 2.3 + t * 3) * u.r * 0.8), Math.round(u.y - 4 - q * h * s), 3, 3);
+  }
+  if (!u.dead && u.slow > 0) for (let i = 0; i < 4; i++) { // frost specks drifting down
+    const q = (t * 0.9 + i * 0.25 + u.phase) % 1;
+    ctx.globalAlpha = 0.9 * (1 - q); ctx.fillStyle = i % 2 ? '#ffffff' : '#bff3ff';
+    ctx.fillRect(Math.round(u.x + Math.cos(i * 1.7) * u.r), Math.round(u.y - h * s * (1 - q)), 2, 2);
+  }
+  ctx.globalAlpha = 1;
+  if (!u.dead && u.shield > 0 && (u.shieldT > 1.5 || Math.sin(t * 20) > 0)) { // shield bubble, blinks before it runs out
+    const cy = u.y - h * s / 2 - hover, rr = Math.max(u.r * 1.6, h * s * 0.62), q = u.shield / u.shieldMax;
+    ctx.globalAlpha = 0.12 + 0.1 * q; ctx.fillStyle = '#4fd6ff'; ctx.beginPath(); ctx.arc(u.x, cy, rr, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.5 + 0.4 * q; ctx.strokeStyle = '#bff3ff'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.globalAlpha = 0.8; ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.arc(u.x, cy, rr * 0.8, -2.4, -1.7); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  if (!u.dead) { // hp bar
+    const bw = 22, bx = u.x - bw / 2, by = u.y - h * s - hover - 6, r = u.hp / u.hpMax;
+    ctx.fillStyle = '#000a'; ctx.fillRect(bx - 1, by - 1, bw + 2, 5);
+    ctx.fillStyle = r > 0.5 ? '#5be36b' : r > 0.25 ? '#ffd23a' : '#ff4a4a'; ctx.fillRect(bx, by, bw * r, 2);
+    const m = u.ult / ULT.full; // ultimate meter, flashes when ready
+    ctx.fillStyle = m >= 1 ? (Math.sin(t * 16) > 0 ? '#fff' : '#4fd6ff') : '#2f9fd0'; ctx.fillRect(bx, by + 2, bw * m, 1);
+    if (u.lvl > 1) { ctx.fillStyle = '#ffe58a'; ctx.font = 'bold 7px sans-serif'; ctx.textAlign = 'left'; ctx.fillText('Lv' + u.lvl, bx + bw + 2, by + 3); }
+  }
+}
+
+// pixel crate: parachute while falling, glow + bob once landed, blinks before it expires
+function drawCrate(d, t) {
+  const c = DROP_KIND[d.kind].c, falling = d.t < DROP.fall, p = Math.min(1, d.t / DROP.fall);
+  const left = DROP.fall + DROP.life - d.t;
+  if (!falling && left < 3 && Math.sin(t * 18) < 0) return;
+  const x = Math.round(d.x), y = Math.round(falling ? d.y - 160 * (1 - p) : d.y - 2 - Math.abs(Math.sin(t * 3)) * 2);
+  ctx.save(); ctx.translate(x, y); ctx.scale(1.4, 1.4); ctx.translate(-x, -y);
+  if (falling) { // canopy + cords
+    ctx.fillStyle = '#e8eef5'; ctx.beginPath(); ctx.arc(x, y - 22, 12, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = c; ctx.fillRect(x - 4, y - 34, 8, 12);
+    ctx.strokeStyle = '#e8eef5'; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(x - 12, y - 22); ctx.lineTo(x - 6, y - 10); ctx.moveTo(x + 12, y - 22); ctx.lineTo(x + 6, y - 10); ctx.stroke();
+  } else glow(x, y - 6, 18, c, 0.35 + 0.15 * Math.sin(t * 5));
+  ctx.fillStyle = '#1b1f27'; ctx.fillRect(x - 8, y - 13, 16, 13);           // outline
+  ctx.fillStyle = '#8a5a2b'; ctx.fillRect(x - 7, y - 12, 14, 11);           // wood
+  ctx.fillStyle = '#a8743c'; ctx.fillRect(x - 7, y - 12, 14, 2);
+  ctx.fillStyle = c; ctx.fillRect(x - 5, y - 9, 10, 7);                     // label
+  ctx.fillStyle = '#fff';
+  if (d.kind === 'heal') { ctx.fillRect(x - 1, y - 8, 2, 5); ctx.fillRect(x - 3, y - 6, 6, 1.5); }
+  else if (d.kind === 'shield') { ctx.fillRect(x - 3, y - 8, 6, 3); ctx.fillRect(x - 2, y - 5, 4, 1.5); ctx.fillRect(x - 1, y - 3.5, 2, 1); }
+  else { ctx.fillRect(x, y - 8, 2, 2); ctx.fillRect(x - 1, y - 6, 2, 2); ctx.fillRect(x - 2, y - 4, 4, 1); ctx.fillRect(x - 1, y - 3, 1, 1); }
+  ctx.restore();
+}
+
+function text(s, x, y, size, color, align = 'center') {
+  ctx.font = `bold ${size}px system-ui,sans-serif`; ctx.textAlign = align;
+  ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.strokeText(s, x, y); ctx.fillStyle = color; ctx.fillText(s, x, y);
+}
+
+const speedBtn = { x: W - 54, y: 12, w: 44, h: 30 }, modeBtn = { x: W - 150, y: 12, w: 88, h: 30 };
+
+function draw(t) {
+  ctx.fillStyle = '#0b0f14'; ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(ground, 0, TOP);
+  // storm outside the zone
+  const zr = zoneR(time);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, TOP, W, BOT - TOP); ctx.arc(CX, CY, Math.max(0, zr), 0, Math.PI * 2, true);
+  ctx.fillStyle = 'rgba(120,40,200,0.38)'; ctx.fill(); ctx.restore();
+  if (zr > 0) { ctx.strokeStyle = '#d9b3ff'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.arc(CX, CY, zr, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
+
+  for (const d of drops) if (d.t >= DROP.fall) drawCrate(d, t); else { // shadow grows as it falls
+    const p = d.t / DROP.fall; ctx.globalAlpha = 0.3 * p; ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.ellipse(d.x, d.y, 9 * p, 3.5 * p, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+  }
+  [...units].sort((a, b) => a.y - b.y).forEach(u => drawUnit(u, t));
+  for (const d of drops) if (d.t < DROP.fall) drawCrate(d, t);
+  for (const s of shots) { ctx.fillStyle = s.c; ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2); ctx.fill(); }
+  for (const f of fxs) {
+    if (f.t < 0 || f.kind === 'later') continue; // not started yet
+    const p = f.t / f.life;
+    if (f.kind === 'beam') {
+      ctx.globalAlpha = 1 - p; ctx.strokeStyle = f.c; ctx.lineWidth = 5 * (1 - p) + 1;
+      ctx.beginPath(); ctx.moveTo(f.x1, f.y1); ctx.lineTo(f.x2, f.y2); ctx.stroke();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    } else if (f.kind === 'blast') {
+      const r = f.r * (0.4 + 0.6 * Math.sqrt(p));
+      ctx.globalAlpha = 0.25 * (1 - p); ctx.fillStyle = f.c; ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.8 * (1 - p); ctx.strokeStyle = f.c; ctx.lineWidth = 2 * (1 - p) + 1; ctx.stroke();
+    } else if (f.kind === 'ultshot') { // the technique's projectile flies to the target (and back for boomerang), 12 fps like the site
+      const v = f.hit.vis, q = f.back ? 1 - Math.abs(1 - 2 * p) : p, sc = v.mega ? 3 : 2;
+      const x = lerp(f.x1, f.x2, q), y = lerp(f.y1, f.y2, q) - Math.sin(Math.PI * q) * (f.back ? 18 : 6);
+      glow(x, y, 14 * sc / 2, f.hit.c, 0.35);
+      drawVfx(v.proj, v, f.t * 12, x, y, Math.atan2(f.y2 - f.y1, f.x2 - f.x1) + (p > 0.5 && f.back ? Math.PI : 0), sc);
+    } else if (f.kind === 'beam2') { // straight ray: glowing core plus the technique's beam/projectile sprite tiled along it
+      const a = 1 - p * p, x2 = f.x + Math.cos(f.ang) * f.len, y2 = f.y + Math.sin(f.ang) * f.len, shape = f.vis.beam && VFX.shapes[f.vis.beam] ? f.vis.beam : null;
+      ctx.globalAlpha = 0.5 * a; ctx.strokeStyle = f.c; ctx.lineWidth = 14 * (1 - p) + 2; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.globalAlpha = a; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3 * (1 - p) + 1; ctx.stroke(); ctx.lineCap = 'butt';
+      if (shape) for (let d = 10; d < f.len * Math.min(1, p * 4); d += 16)
+        drawVfx(shape, f.vis, f.t * 12 + d / 16, f.x + Math.cos(f.ang) * d, f.y + Math.sin(f.ang) * d, f.ang, 1.5, a);
+      else zigzag(f.x, f.y, x2, y2, f.c, a);
+    } else if (f.kind === 'streak') { // dash afterimage trail, impact at the end
+      ctx.globalAlpha = 0.6 * (1 - p); ctx.strokeStyle = f.c; ctx.lineWidth = 12 * (1 - p) + 2; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(f.x1, f.y1); ctx.lineTo(lerp(f.x1, f.x2, Math.min(1, p * 1.6)), lerp(f.y1, f.y2, Math.min(1, p * 1.6))); ctx.stroke(); ctx.lineCap = 'butt';
+      drawVfx(f.vis.melee && VFX.shapes[f.vis.melee] ? f.vis.melee : f.vis.proj, f.vis, f.t * 12, f.x2, f.y2, 0, 2.2, 1 - p);
+    } else if (f.kind === 'swing') { // wide arc in front of the attacker
+      const u = f.u, x = u.x, y = u.y - 10, a0 = f.ang - 0.9 + 1.8 * Math.min(1, p * 1.8);
+      ctx.globalAlpha = 0.45 * (1 - p); ctx.fillStyle = f.c; ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, f.r, f.ang - 0.9, a0); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+      drawVfx(f.vis.melee && VFX.shapes[f.vis.melee] ? f.vis.melee : f.vis.proj, f.vis, f.t * 12, x + Math.cos(a0) * f.r * 0.7, y + Math.sin(a0) * f.r * 0.7, a0, 2.4, 1 - p);
+    } else if (f.kind === 'aura') { // pulsing ring around the caster with sprites riding it
+      const x = f.u.x, y = f.u.y - 8, r = f.r * (0.5 + 0.5 * Math.sqrt(p));
+      glow(x, y, r, f.c, 0.35 * (1 - p));
+      ctx.globalAlpha = 1 - p; ctx.strokeStyle = f.c; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+      for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2 + f.t * 3; drawVfx(f.vis.proj, f.vis, f.t * 12 + i, x + Math.cos(a) * r, y + Math.sin(a) * r * 0.8, a + Math.PI / 2, 1.3, 1 - p); }
+    } else if (f.kind === 'orbit') { // three orbs circling the caster
+      const x = f.u.x, y = f.u.y - 10, fade = Math.min(1, (1 - p) * 4);
+      for (let i = 0; i < 3; i++) { const a = f.t * 9 + i * Math.PI * 2 / 3; drawVfx(f.vis.proj, f.vis, f.t * 12 + i, x + Math.cos(a) * f.r, y + Math.sin(a) * f.r * 0.7, a + Math.PI / 2, 2, fade); }
+    } else if (f.kind === 'meteor') { // falls from above onto its spot, shadow grows underneath
+      const h = 140 * (1 - p);
+      ctx.globalAlpha = 0.3 * p; ctx.fillStyle = '#000'; ctx.beginPath(); ctx.ellipse(f.x, f.y + 8, 14 * p, 5 * p, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+      glow(f.x + h * 0.3, f.y - h, 12, VFX.pal[f.vis.pal][3], 0.4);
+      drawVfx(f.vis.proj, f.vis, f.t * 12, f.x + h * 0.3, f.y - h, Math.PI / 2 + 0.3, f.vis.mega ? 3 : 2.4);
+    } else if (f.kind === 'zap') {
+      zigzag(f.x1, f.y1, f.x2, f.y2, f.c, 1 - p);
+    } else if (f.kind === 'impact') {
+      const v = f.vis, shape = v.melee && VFX.shapes[v.melee] ? v.melee : v.proj;
+      glow(f.x, f.y, f.r * 1.2, VFX.pal[v.pal][3], 0.4 * (1 - p));
+      drawVfx(shape, v, f.t * 12, f.x, f.y, 0, Math.min(3, f.r / 15) * (0.8 + 0.3 * p), 1 - p * p);
+    } else if (f.kind === 'shard') {
+      const v = f.vis, d = f.r * (0.2 + 0.8 * p);
+      drawVfx(v.proj, v, f.t * 12, f.x + Math.cos(f.a) * d, f.y + Math.sin(f.a) * d * 0.7, f.a, 1.3, 1 - p);
+    } else if (f.kind === 'name' && !f.u.dead) {
+      ctx.globalAlpha = Math.min(1, (1 - p) * 3);
+      text(f.txt, Math.max(50, Math.min(W - 50, f.u.x)), f.u.y - f.u.r * 2 - 22 - 10 * p, 11, f.c);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // HUD
+  ctx.fillStyle = '#0b0f14'; ctx.fillRect(0, 0, W, TOP); ctx.fillRect(0, BOT, W, H - BOT);
+  const alive = units.filter(u => !u.dead).length;
+  text(`${alive} ALIVE`, 12, 34, 20, '#fff', 'left');
+  text(`${Math.floor(time / 60)}:${String(Math.floor(time % 60)).padStart(2, '0')}`, CX, 34, 16, '#9fb3c8');
+  ctx.fillStyle = '#1d2733'; ctx.fillRect(speedBtn.x, speedBtn.y, speedBtn.w, speedBtn.h);
+  text(`${speed}×`, speedBtn.x + speedBtn.w / 2, speedBtn.y + 21, 14, '#fff');
+  ctx.fillStyle = '#1d2733'; ctx.fillRect(modeBtn.x, modeBtn.y, modeBtn.w, modeBtn.h);
+  text(MODES[MODE].label, modeBtn.x + modeBtn.w / 2, modeBtn.y + 20, 12, MODE === 'rookie' ? '#ffd23a' : '#fff');
+  feed.forEach((f, i) => { ctx.globalAlpha = Math.min(1, f.t); text(f.txt, 8, TOP + 16 + i * 13, 10, '#fff', 'left'); });
+  ctx.globalAlpha = 1;
+  text(`${zr <= 0 ? 'ZONE CLOSED' : 'ZONE SHRINKING'} · ${Math.round(zoneDps(zr) * 100)}% HP/s`, CX, BOT + 16, 12, '#d9b3ff');
+
+  if (time < 1.5) text('FIGHT!', CX, CY, 44 + time * 10, '#ffe23a');
+  if (over && endT > 0.6) {
+    const w = units.find(u => !u.dead);
+    ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, 0, W, H);
+    text(w ? 'WINNER' : 'DRAW', CX, CY - 130, 34, '#ffe23a');
+    if (w) {
+      const fr = w.d.f.battle || w.d.f.map, img = sheet(w.d.s), s = Math.min(1.6, 150 / fr[3]);
+      ctx.save(); ctx.translate(CX, CY + 60 + Math.sin(t * 2.4) * 2); ctx.scale(-s, s);
+      ctx.drawImage(img, fr[0], fr[1], fr[2], fr[3], -fr[4], -fr[5], fr[2], fr[3]); ctx.restore();
+      text(w.d.n, CX, CY + 100, 22, '#fff');
+      text(`${w.kills} KOs · Lv${w.lvl}`, CX, CY + 122, 13, '#9fb3c8');
+    }
+    if (endT > 1.5) text('Tap to play again', CX, BOT - 20, 14, '#fff');
+  }
+}
+
+cv.addEventListener('pointerdown', e => {
+  const r = cv.getBoundingClientRect(), x = (e.clientX - r.left) / scale, y = (e.clientY - r.top) / scale;
+  if (x >= speedBtn.x && y <= speedBtn.y + speedBtn.h) { speed = speed === 4 ? 1 : speed * 2; return; }
+  if (x >= modeBtn.x && x <= modeBtn.x + modeBtn.w && y <= modeBtn.y + modeBtn.h) { MODE = MODE === 'mixed' ? 'rookie' : 'mixed'; newGame(); return; }
+  if (over && endT > 1.5) newGame();
+});
+
+newGame();
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  for (let i = 0; i < speed; i++) update(dt);
+  draw(now / 1000);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Self-check of the combat rules: open index.html?test and read the console.
+if (new URLSearchParams(location.search).has('test')) {
+  const real = units, ok = (name, pass) => console[pass ? 'log' : 'error']((pass ? 'PASS ' : 'FAIL ') + name);
+  const mk = (x, y) => ({ x, y, r: 6, hp: 100, hpMax: 100, ult: 0, dmg: 10, sc: 1, kills: 0, lvl: 1, vx: 0, vy: 0, dead: false, state: 'idle', d: { t: 'normal' } });
+  const a = mk(0, 8), b = mk(20, 8), c = mk(-20, 8); units = [a, b, c];
+  ultHit(b, 10, a); ok('ult hit leaves caster meter at 0', a.ult === 0);
+  damage(b, 10, a); ok('normal hit charges attacker meter', a.ult > 0);
+  b.hp = 100; b.shield = 15; damage(b, 10, a); ok('shield absorbs before HP', b.hp === 100 && b.shield === 5);
+  damage(b, 10, null); ok('zone damage ignores shield', b.hp === 90 && b.shield === 5);
+  b.hp = c.hp = 100; hitArc(a, 0, 0, -Math.PI + 0.05, 0.3, 30, 10); ok('arc across ±180° hits behind only', c.hp < 100 && b.hp === 100);
+  units = real;
+}
+</script>
+</body>
+</html>
