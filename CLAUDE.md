@@ -5,7 +5,7 @@ Snapshot of the prototype built 2026-11-16/17 in `Downloads\digisurvivor-handoff
 A single-screen, portrait auto battle royale: 35 random Digimon (Rookie–Mega) fight automatically inside a shrinking zone until one is left. A HUD button switches to ROOKIES mode (every Rookie at once).
 
 ## Run
-`python -m http.server 8765` in this folder, then open http://localhost:8765/ (it must be served; `file://` won't load the sheets). `?test` runs 5 combat-rule self-checks and logs PASS/FAIL to the console.
+`python -m http.server 8765` in this folder, then open http://localhost:8765/ (it must be served; `file://` won't load the sheets). `?test` runs 10 self-checks (combat, EXP, evolution) and logs PASS/FAIL to the console.
 
 ## Files
 - `index.html`: the whole game (one canvas, about 600 lines, no dependencies).
