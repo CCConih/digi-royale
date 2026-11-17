@@ -110,6 +110,14 @@ const AD_W = 160, AD_H = 112, adImg = Object.assign(new Image(), { src: 'vfx/all
 const AD_TIMELINE = [[2, 0, 0.16], [3, 0.16, 0.32], [4, 0.32, 0.6], [5, 0.6, 0.82], [6, 0.82, 0.98], [7, 0.98, 1.15]];
 const AD = { slash: 0.6, blast: 1.4, radius: 75, trigger: 0.32 }; // damage × the ult's base damage
 let shake = 0;
+// Omnimon's 8 poses from the user's pose guide (vfx/omnimon-poses.png, cut by tools/mkomniposes.py): facing right,
+// feet at (OP_W/2, OP_FEET), body ~OP_BODY px tall. Charge = F1 then F2; during the ult they follow AD_TIMELINE (F3–F8).
+const OP_W = 133, OP_H = 142, OP_FEET = 133, OP_BODY = 115, opImg = Object.assign(new Image(), { src: 'vfx/omnimon-poses.png' });
+function omniPose(u) {
+  if (u.state === 'charge') return u.st < DUR.charge / 2 ? 0 : 1;
+  if (u.state === 'ult') return (AD_TIMELINE.find(s => u.st < s[2]) || AD_TIMELINE.at(-1))[0];
+  return -1;
+}
 function drawAD(frame, x, y, sc, flip, alpha = 1) {
   if (!adImg.naturalWidth) return;
   ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(Math.round(x), Math.round(y)); if (flip) ctx.scale(-1, 1);
@@ -373,7 +381,7 @@ function update(dt) {
       if (u.dead) continue;
     }
     if (u.state === 'charge' && u.st >= DUR.charge) { fireUlt(u); setState(u, 'ult'); }
-    else if (u.state in DUR && u.st >= DUR[u.state]) setState(u, 'idle');
+    else if (u.state in DUR && u.st >= (u.state === 'ult' && isOmni(u) ? AD_TIMELINE.at(-1)[2] : DUR[u.state])) setState(u, 'idle'); // Omnimon holds his All Delete poses to the end
 
     // pick target: nearest living enemy
     if ((u.retarget -= dt) <= 0 || !u.target || u.target.dead) {
@@ -488,10 +496,14 @@ function drawUnit(u, t) {
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 0.7 + 0.3 * Math.sin(t * 6); ctx.strokeStyle = '#ffd23a'; ctx.lineWidth = 1.5; // glowing ring at his feet
     ctx.beginPath(); ctx.ellipse(u.x, u.y, u.r * 1.6, u.r * 0.55, 0, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
-    if (u.state === 'charge' && u.st < DUR.charge / 2) drawAD(0, u.x, u.y - hh * 0.55, 0.5, false);
   }
   ctx.globalAlpha = a.alpha;
-  if (img.complete && img.naturalWidth) {
+  const op = omni && opImg.naturalWidth ? omniPose(u) : -1;
+  if (op >= 0) { // pose from the guide replaces the sheet sprite, scaled so his body matches his normal height
+    const k = u.sc * (OMNIMON.f.map[3] * 1.1) / OP_BODY;
+    ctx.save(); ctx.translate(Math.round(u.x), Math.round(u.y - hover)); ctx.scale(u.face > 0 ? k : -k, k); // guide faces right
+    ctx.drawImage(opImg, op * OP_W, 0, OP_W, OP_H, -OP_W / 2, -OP_FEET, OP_W, OP_H); ctx.restore();
+  } else if (img.complete && img.naturalWidth) {
     ctx.save();
     ctx.translate(u.x + a.ox * u.sc, u.y + a.oy * u.sc - hover);
     ctx.scale(u.face > 0 ? -s : s, s * a.sy); // sheets face left as drawn
@@ -505,14 +517,13 @@ function drawUnit(u, t) {
     ctx.restore();
   }
   ctx.globalAlpha = 1;
-  if (omni) { // data sparkles rising around him; second half of the charge: F2 digital vortex around the body
+  if (omni) { // data sparkles rising around him (the charge effects are baked into his guide poses)
     for (let i = 0; i < 6; i++) {
       const q = (t * 0.7 + i / 6 + u.phase) % 1;
       ctx.globalAlpha = 1 - q; ctx.fillStyle = i % 2 ? '#ffe58a' : '#8ff0ff';
       ctx.fillRect(Math.round(u.x + Math.sin(i * 2.1 + t * 2) * u.r * 1.1), Math.round(u.y - q * hh * 1.2), 2, 2);
     }
     ctx.globalAlpha = 1;
-    if (u.state === 'charge' && u.st >= DUR.charge / 2) drawAD(1, u.x, my, 0.55, u.face < 0);
   }
   if (!u.dead && u.burn > 0) for (let i = 0; i < 2 + Math.min(4, u.burn); i++) { // embers rising
     const q = (t * 1.6 + i * 0.37 + u.phase) % 1;
