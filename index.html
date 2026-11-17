@@ -195,7 +195,7 @@ function fireUlt(u) {
   const t = u.ultAt, tx = t.x, ty = t.y - 8; // aims where the target is now, even if it just fell
   const v = visOf(u), kind = ultKind(u), c = ultColor(u), D = u.dmg * ULT.mult * ((MODES[MODE].kindDmg || KIND_DMG)[kind] || 1);
   const ox = u.x + u.face * 6, oy = u.y - 12, ang = Math.atan2(ty - oy, tx - ox), dist = Math.hypot(tx - ox, ty - oy);
-  const hit = { owner: u, x: tx, y: ty, r: ULT.radius * (0.8 + 0.1 * u.d.st), dmg: D, vis: v, c };
+  const sk = skillOf(u), hit = { owner: u, x: tx, y: ty, r: ULT.radius * (0.8 + 0.1 * u.d.st), dmg: D, vis: v, c, skill: sk };
   const P = (a, r, x, y, n, life) => { for (let i = 0; i < n; i++) fxs.push({ kind: 'shard', x, y, a: a(i, n), r, vis: v, t: 0, life }); };
   u.ult = 0; u.ultAt = null;
   if (!v) { fxs.push({ kind: 'beam', x1: ox, y1: oy, x2: tx, y2: ty, c, t: 0, life: 0.18 }); ultBlast(hit); return; }
@@ -204,9 +204,9 @@ function fireUlt(u) {
       fxs.push({ kind: 'beam2', x: ox, y: oy, ang, len, vis: v, c, t: 0, life: 0.4 }); break; }
     case 'dash': { const len = Math.min(dist + 40, 170); hitLine(u, u.x, u.y - 8, ang, len, u.r + 6, D);
       u.dash = { x0: u.x, y0: u.y, x1: u.x + Math.cos(ang) * len, y1: u.y + Math.sin(ang) * len };
-      fxs.push({ kind: 'streak', x1: u.x, y1: u.y - 10, x2: u.dash.x1, y2: u.dash.y1 - 10, vis: v, c, t: 0, life: 0.35 }); break; }
+      fxs.push({ kind: 'streak', x1: u.x, y1: u.y - 10, x2: u.dash.x1, y2: u.dash.y1 - 10, vis: v, c, t: 0, life: 0.35, skill: sk }); break; }
     case 'melee': hitArc(u, u.x, u.y - 8, ang, 0.9, 64, D * 1.2);
-      fxs.push({ kind: 'swing', u, ang, r: 64, vis: v, c, t: 0, life: 0.3 }); break;
+      fxs.push({ kind: 'swing', u, ang, r: 64, vis: v, c, t: 0, life: 0.3, skill: sk }); break;
     case 'cone': hitArc(u, ox, oy, ang, 0.45, 150, D);
       P((i, n) => ang - 0.45 + 0.9 * i / (n - 1), 150, ox, oy, 7, 0.35); break;
     case 'nova': hitCircle(u, u.x, u.y - 8, 100, D * 0.9);
@@ -217,7 +217,7 @@ function fireUlt(u) {
       fxs.push({ kind: 'orbit', u, r: 44, vis: v, c, t: 0, life: 1 }); break;
     case 'meteor': for (let i = 0; i < 3; i++) {
         const mx = tx + rnd(-22, 22), my = ty + rnd(-16, 16), r = 30;
-        fxs.push({ kind: 'meteor', x: mx, y: my, vis: v, t: -i * 0.12, life: 0.35 });
+        fxs.push({ kind: 'meteor', x: mx, y: my, vis: v, t: -i * 0.12, life: 0.35, skill: sk });
         later(i * 0.12 + 0.35, () => ultBlast({ ...hit, x: mx, y: my, r, dmg: D * 0.55 }));
       } break;
     case 'chain': { let from = { x: ox, y: oy }, cur = t; const done = new Set();
@@ -233,6 +233,9 @@ function fireUlt(u) {
       hit.pierce = statusOf(u).pierce || 0; hit.ang = ang;
       fxs.push({ kind: 'ultshot', x1: ox, y1: oy, x2: tx, y2: ty, hit, t: 0, life: Math.max(0.12, Math.min(0.45, dist / 380)) });
   }
+  // archetypes without a blast still get the skill's impact: on the caster for area kinds, else on the target spot
+  if (sk && !['projectile', 'meteor', 'boomerang'].includes(kind))
+    fxs.push(['nova', 'aura', 'orbit'].includes(kind) ? skillHit(sk, u.x, u.y - 8, kind === 'nova' ? 100 : 80, u) : skillHit(sk, tx, ty, hit.r));
 }
 
 function ultBlast(h) {
@@ -245,11 +248,34 @@ function ultBlast(h) {
     if (next) fxs.push({ kind: 'ultshot', x1: h.x, y1: h.y, x2: next.o.x, y2: next.o.y - 8, hit: { ...h, x: next.o.x, y: next.o.y - 8, dmg: h.dmg * 0.85, pierce: h.pierce - 1 }, t: 0, life: Math.max(0.1, next.along / 380) });
   }
   fxs.push({ kind: 'blast', x: h.x, y: h.y, r: h.r, c: h.c, t: 0, life: 0.45 });
-  if (h.vis) {
+  if (h.skill) fxs.push(skillHit(h.skill, h.x, h.y, h.r));
+  else if (h.vis) {
     fxs.push({ kind: 'impact', x: h.x, y: h.y, r: h.r, vis: h.vis, t: 0, life: 0.4 });
     for (let i = 0; i < 6; i++) fxs.push({ kind: 'shard', x: h.x, y: h.y, a: i / 6 * Math.PI * 2 + rnd(-0.2, 0.2), r: h.r, vis: h.vis, t: 0, life: 0.35 });
   }
 }
+
+// Skill sheet (vfx/skills.png, cut by tools/mkskills.py): 7 rows × 7 frames of 64×52, played at 12 fps.
+// fly = looping frames while travelling, hit = one-shot frames on impact. Chosen by element type (+ archetype for fire).
+const SKILL = { fireball: { row: 0, fly: [0, 3], hit: [4, 6] }, fist: { row: 1, fly: [0, 3], hit: [4, 6] },
+  ice: { row: 2, fly: [1, 3], hit: [4, 6] }, bolt: { row: 3, hit: [1, 6], ground: true }, vine: { row: 4, hit: [1, 6], ground: true },
+  portal: { row: 5, hit: [1, 6] }, barrier: { row: 6, hit: [0, 6] } };
+const SKILL_W = 64, SKILL_H = 52, skillImg = Object.assign(new Image(), { src: 'vfx/skills.png' });
+const CLOSE_KINDS = new Set(['melee', 'dash', 'cone', 'aura', 'orbit', 'nova']);
+function skillOf(u) {
+  const t = u.d.t;
+  return t === 'fire' ? (CLOSE_KINDS.has(ultKind(u)) ? 'fist' : 'fireball') : t === 'ice' || t === 'water' ? 'ice'
+    : t === 'electric' ? 'bolt' : t === 'grass' || t === 'ground' ? 'vine' : t === 'dark' || t === 'poison' ? 'portal' : null;
+}
+const skillHit = (s, x, y, r, u) => ({ kind: 'skill', s, x, y, u, r, t: 0, life: (SKILL[s].hit[1] - SKILL[s].hit[0] + 1) / 12 });
+function drawSkill(s, frame, x, y, ang, sc, alpha = 1) { // frame = column 0–6; ground skills sit on y instead of centring
+  if (!skillImg.naturalWidth) return;
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(Math.round(x), Math.round(y)); if (ang) ctx.rotate(ang);
+  const w = SKILL_W * sc, h = SKILL_H * sc, oy = SKILL[s].ground ? -h + 4 : -h / 2;
+  if (s === 'vine') { ctx.shadowColor = '#000c'; ctx.shadowBlur = 3; } // green vines vanish on the green arena without an outline
+  ctx.drawImage(skillImg, frame * SKILL_W, SKILL[s].row * SKILL_H, SKILL_W, SKILL_H, -w / 2, oy, w, h); ctx.restore();
+}
+const flyFrame = (s, t) => { const [a, b] = SKILL[s].fly; return a + Math.floor(t * 12) % (b - a + 1); };
 
 // draw one atlas sprite centred at x,y; returns false if it isn't available
 function drawVfx(shape, v, frame, x, y, ang, sc, alpha = 1) {
@@ -285,7 +311,7 @@ function updateDrops(dt, zr, alive) {
     const u = alive.find(u => Math.hypot(u.x - d.x, u.y - d.y) < u.r + 8);
     if (!u) continue;
     d.taken = true;
-    if (d.kind === 'shield') { u.shield = u.hpMax * DROP.shield; u.shieldMax = u.shield; u.shieldT = DROP.shieldTime; }
+    if (d.kind === 'shield') { u.shield = u.hpMax * DROP.shield; u.shieldMax = u.shield; u.shieldT = DROP.shieldTime; fxs.push(skillHit('barrier', 0, 0, 30, u)); }
     else if (d.kind === 'heal') u.hp = Math.min(u.hpMax, u.hp + u.hpMax * DROP.heal);
     else if (d.kind === 'ult') u.ult = ULT.full;
     const xp = d.kind === 'exp' && expDrop(zr);
@@ -527,7 +553,9 @@ function draw(t) {
       const v = f.hit.vis, q = f.back ? 1 - Math.abs(1 - 2 * p) : p, sc = v.mega ? 3 : 2;
       const x = lerp(f.x1, f.x2, q), y = lerp(f.y1, f.y2, q) - Math.sin(Math.PI * q) * (f.back ? 18 : 6);
       glow(x, y, 14 * sc / 2, f.hit.c, 0.35);
-      drawVfx(v.proj, v, f.t * 12, x, y, Math.atan2(f.y2 - f.y1, f.x2 - f.x1) + (p > 0.5 && f.back ? Math.PI : 0), sc);
+      const dir = Math.atan2(f.y2 - f.y1, f.x2 - f.x1) + (p > 0.5 && f.back ? Math.PI : 0), s = f.hit.skill;
+      if (s && SKILL[s].fly) drawSkill(s, flyFrame(s, f.t), x, y, dir, v.mega ? 0.85 : 0.65);
+      else if (v) drawVfx(v.proj, v, f.t * 12, x, y, dir, sc);
     } else if (f.kind === 'beam2') { // straight ray: glowing core plus the technique's beam/projectile sprite tiled along it
       const a = 1 - p * p, x2 = f.x + Math.cos(f.ang) * f.len, y2 = f.y + Math.sin(f.ang) * f.len, shape = f.vis.beam && VFX.shapes[f.vis.beam] ? f.vis.beam : null;
       ctx.globalAlpha = 0.5 * a; ctx.strokeStyle = f.c; ctx.lineWidth = 14 * (1 - p) + 2; ctx.lineCap = 'round';
@@ -539,12 +567,14 @@ function draw(t) {
     } else if (f.kind === 'streak') { // dash afterimage trail, impact at the end
       ctx.globalAlpha = 0.6 * (1 - p); ctx.strokeStyle = f.c; ctx.lineWidth = 12 * (1 - p) + 2; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(f.x1, f.y1); ctx.lineTo(lerp(f.x1, f.x2, Math.min(1, p * 1.6)), lerp(f.y1, f.y2, Math.min(1, p * 1.6))); ctx.stroke(); ctx.lineCap = 'butt';
-      drawVfx(f.vis.melee && VFX.shapes[f.vis.melee] ? f.vis.melee : f.vis.proj, f.vis, f.t * 12, f.x2, f.y2, 0, 2.2, 1 - p);
+      if (f.skill && SKILL[f.skill].fly) drawSkill(f.skill, flyFrame(f.skill, f.t), lerp(f.x1, f.x2, Math.min(1, p * 1.6)), lerp(f.y1, f.y2, Math.min(1, p * 1.6)), Math.atan2(f.y2 - f.y1, f.x2 - f.x1), 0.7, 1 - p * p);
+      else drawVfx(f.vis.melee && VFX.shapes[f.vis.melee] ? f.vis.melee : f.vis.proj, f.vis, f.t * 12, f.x2, f.y2, 0, 2.2, 1 - p);
     } else if (f.kind === 'swing') { // wide arc in front of the attacker
       const u = f.u, x = u.x, y = u.y - 10, a0 = f.ang - 0.9 + 1.8 * Math.min(1, p * 1.8);
       ctx.globalAlpha = 0.45 * (1 - p); ctx.fillStyle = f.c; ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, f.r, f.ang - 0.9, a0); ctx.closePath(); ctx.fill();
       ctx.globalAlpha = 1;
-      drawVfx(f.vis.melee && VFX.shapes[f.vis.melee] ? f.vis.melee : f.vis.proj, f.vis, f.t * 12, x + Math.cos(a0) * f.r * 0.7, y + Math.sin(a0) * f.r * 0.7, a0, 2.4, 1 - p);
+      if (f.skill && SKILL[f.skill].fly) drawSkill(f.skill, flyFrame(f.skill, f.t), x + Math.cos(f.ang) * f.r * 0.6 * Math.min(1, p * 2), y + Math.sin(f.ang) * f.r * 0.6 * Math.min(1, p * 2), f.ang, 0.7, 1 - p * p); // punch flies out
+      else drawVfx(f.vis.melee && VFX.shapes[f.vis.melee] ? f.vis.melee : f.vis.proj, f.vis, f.t * 12, x + Math.cos(a0) * f.r * 0.7, y + Math.sin(a0) * f.r * 0.7, a0, 2.4, 1 - p);
     } else if (f.kind === 'aura') { // pulsing ring around the caster with sprites riding it
       const x = f.u.x, y = f.u.y - 8, r = f.r * (0.5 + 0.5 * Math.sqrt(p));
       glow(x, y, r, f.c, 0.35 * (1 - p));
@@ -557,7 +587,11 @@ function draw(t) {
       const h = 140 * (1 - p);
       ctx.globalAlpha = 0.3 * p; ctx.fillStyle = '#000'; ctx.beginPath(); ctx.ellipse(f.x, f.y + 8, 14 * p, 5 * p, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
       glow(f.x + h * 0.3, f.y - h, 12, VFX.pal[f.vis.pal][3], 0.4);
-      drawVfx(f.vis.proj, f.vis, f.t * 12, f.x + h * 0.3, f.y - h, Math.PI / 2 + 0.3, f.vis.mega ? 3 : 2.4);
+      if (f.skill && SKILL[f.skill].fly) drawSkill(f.skill, flyFrame(f.skill, f.t), f.x + h * 0.3, f.y - h, Math.PI / 2 + 0.3, 0.7);
+      else drawVfx(f.vis.proj, f.vis, f.t * 12, f.x + h * 0.3, f.y - h, Math.PI / 2 + 0.3, f.vis.mega ? 3 : 2.4);
+    } else if (f.kind === 'skill') { // one-shot impact from the skill sheet, sized to the hit radius; follows its unit if given
+      const [a, b] = SKILL[f.s].hit, x = f.u ? f.u.x : f.x, y = f.u ? f.u.y - (SKILL[f.s].ground ? 0 : 12) : f.y + (SKILL[f.s].ground ? 8 : 0);
+      drawSkill(f.s, a + Math.min(b - a, Math.floor(p * (b - a + 1))), x, y, 0, Math.min(2.4, f.r / 26), p > 0.8 ? (1 - p) * 5 : 1);
     } else if (f.kind === 'zap') {
       zigzag(f.x1, f.y1, f.x2, f.y2, f.c, 1 - p);
     } else if (f.kind === 'impact') {
