@@ -110,14 +110,28 @@ const AD_W = 160, AD_H = 112, adImg = Object.assign(new Image(), { src: 'vfx/all
 const AD_TIMELINE = [[2, 0, 0.16], [3, 0.16, 0.32], [4, 0.32, 0.6], [5, 0.6, 0.82], [6, 0.82, 0.98], [7, 0.98, 1.15]];
 const AD = { slash: 0.6, blast: 1.4, radius: 75, trigger: 0.32 }; // damage × the ult's base damage
 let shake = 0;
-// Omnimon's 8 poses from the user's pose guide (vfx/omnimon-poses.png, cut by tools/mkomniposes.py): facing right,
-// feet at (OP_W/2, OP_FEET), body ~OP_BODY px tall. Charge = F1 then F2; during the ult they follow AD_TIMELINE (F3–F8).
-const OP_W = 133, OP_H = 142, OP_FEET = 133, OP_BODY = 115, opImg = Object.assign(new Image(), { src: 'vfx/omnimon-poses.png' });
-function omniPose(u) {
-  if (u.state === 'charge') return u.st < DUR.charge / 2 ? 0 : 1;
-  if (u.state === 'ult') return (AD_TIMELINE.find(s => u.st < s[2]) || AD_TIMELINE.at(-1))[0];
+// Custom attack animations from the user's per-Digimon guide sheets. The poses replace the sprite while charging and
+// during the ult. Strip frames are w×h and face right; (ax, feet) = foot anchor, body = body height in frame px,
+// mouth = where breath effects start (frame px from the anchor). charge: pose frames spread over the charge;
+// seq: [pose, until s] after the ult fires, and the ult state lasts until the last one ends.
+const ANIM = {
+  Omnimon: { img: 'vfx/omnimon-poses.png', w: 133, h: 142, ax: 66.5, feet: 133, body: 115, charge: [0, 1],      // tools/mkomniposes.py
+    seq: AD_TIMELINE.map(([f, , t1]) => [f, t1]) },
+  Gabumon: { img: 'vfx/gabumon-poses.png', w: 128, h: 107, ax: 57, feet: 101, body: 75, charge: [0, 1, 2],        // tools/mkguide.py
+    seq: [[3, 0.14], [4, 0.3], [5, 0.5], [6, 0.68], [7, 0.85]], mouth: [38, -41] },
+};
+for (const A of Object.values(ANIM)) A.im = Object.assign(new Image(), { src: A.img });
+const animOf = u => ANIM[u.d.n];
+const animScale = u => u.sc * (u.d.f.map || u.d.f.battle)[3] * 1.1 / animOf(u).body; // body matches the normal sprite height
+function customPose(u) {
+  const A = animOf(u); if (!A || u.dead) return -1;
+  if (u.state === 'charge') return A.charge[Math.min(A.charge.length - 1, Math.floor(u.st / DUR.charge * A.charge.length))];
+  if (u.state === 'ult') return (A.seq.find(s => u.st < s[1]) || A.seq.at(-1))[0];
   return -1;
 }
+// Gabumon "Petit Fire": special-fx.png row 1 frames F4–F8 (cone blast → spread → eruption → embers → dissolve) from his mouth
+const SFX_W = 96, SFX_H = 100, sfxImg = Object.assign(new Image(), { src: 'vfx/special-fx.png' });
+const PETIT_FIRE = [[3, 0.14], [4, 0.3], [5, 0.5], [6, 0.68], [7, 0.85]]; // [fx frame, until s], in step with his poses
 function drawAD(frame, x, y, sc, flip, alpha = 1) {
   if (!adImg.naturalWidth) return;
   ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(Math.round(x), Math.round(y)); if (flip) ctx.scale(-1, 1);
@@ -234,7 +248,8 @@ function fireUlt(u) {
   const t = u.ultAt, tx = t.x, ty = t.y - 8; // aims where the target is now, even if it just fell
   const v = visOf(u), kind = ultKind(u), c = ultColor(u), D = u.dmg * ULT.mult * ((MODES[MODE].kindDmg || KIND_DMG)[kind] || 1);
   const ox = u.x + u.face * 6, oy = u.y - 12, ang = Math.atan2(ty - oy, tx - ox), dist = Math.hypot(tx - ox, ty - oy);
-  const sk = skillOf(u), hit = { owner: u, x: tx, y: ty, r: ULT.radius * (0.8 + 0.1 * u.d.st), dmg: D, vis: v, c, skill: sk };
+  // custom-animated Digimon draw their own effects, so no skill-sheet effect for them
+  const sk = animOf(u) ? null : skillOf(u), hit = { owner: u, x: tx, y: ty, r: ULT.radius * (0.8 + 0.1 * u.d.st), dmg: D, vis: v, c, skill: sk };
   const P = (a, r, x, y, n, life) => { for (let i = 0; i < n; i++) fxs.push({ kind: 'shard', x, y, a: a(i, n), r, vis: v, t: 0, life }); };
   u.ult = 0; u.ultAt = null;
   if (isOmni(u)) { allDelete(u, tx, ty, D); return; }
@@ -248,6 +263,7 @@ function fireUlt(u) {
     case 'melee': hitArc(u, u.x, u.y - 8, ang, 0.9, 64, D * 1.2);
       fxs.push({ kind: 'swing', u, ang, r: 64, vis: v, c, t: 0, life: 0.3, skill: sk }); break;
     case 'cone': hitArc(u, ox, oy, ang, 0.45, 150, D);
+      if (u.d.n === 'Gabumon') { fxs.push({ kind: 'petitfire', u, ang, t: 0, life: PETIT_FIRE.at(-1)[1] }); break; }
       P((i, n) => ang - 0.45 + 0.9 * i / (n - 1), 150, ox, oy, 7, 0.35); break;
     case 'nova': hitCircle(u, u.x, u.y - 8, 100, D * 0.9);
       P((i, n) => i / n * Math.PI * 2, 100, u.x, u.y - 10, 10, 0.4); break;
@@ -381,7 +397,7 @@ function update(dt) {
       if (u.dead) continue;
     }
     if (u.state === 'charge' && u.st >= DUR.charge) { fireUlt(u); setState(u, 'ult'); }
-    else if (u.state in DUR && u.st >= (u.state === 'ult' && isOmni(u) ? AD_TIMELINE.at(-1)[2] : DUR[u.state])) setState(u, 'idle'); // Omnimon holds his All Delete poses to the end
+    else if (u.state in DUR && u.st >= (u.state === 'ult' && animOf(u) ? animOf(u).seq.at(-1)[1] : DUR[u.state])) setState(u, 'idle'); // custom animations hold their poses to the end
 
     // pick target: nearest living enemy
     if ((u.retarget -= dt) <= 0 || !u.target || u.target.dead) {
@@ -498,11 +514,11 @@ function drawUnit(u, t) {
     ctx.beginPath(); ctx.ellipse(u.x, u.y, u.r * 1.6, u.r * 0.55, 0, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
   }
   ctx.globalAlpha = a.alpha;
-  const op = omni && opImg.naturalWidth ? omniPose(u) : -1;
-  if (op >= 0) { // pose from the guide replaces the sheet sprite, scaled so his body matches his normal height
-    const k = u.sc * (OMNIMON.f.map[3] * 1.1) / OP_BODY;
-    ctx.save(); ctx.translate(Math.round(u.x), Math.round(u.y - hover)); ctx.scale(u.face > 0 ? k : -k, k); // guide faces right
-    ctx.drawImage(opImg, op * OP_W, 0, OP_W, OP_H, -OP_W / 2, -OP_FEET, OP_W, OP_H); ctx.restore();
+  const op = customPose(u);
+  if (op >= 0 && animOf(u).im.naturalWidth) { // pose from the user's guide replaces the sheet sprite
+    const A = animOf(u), k = animScale(u);
+    ctx.save(); ctx.translate(Math.round(u.x), Math.round(u.y - hover)); ctx.scale(u.face > 0 ? k : -k, k); // guides face right
+    ctx.drawImage(A.im, op * A.w, 0, A.w, A.h, -A.ax, -A.feet, A.w, A.h); ctx.restore();
   } else if (img.complete && img.naturalWidth) {
     ctx.save();
     ctx.translate(u.x + a.ox * u.sc, u.y + a.oy * u.sc - hover);
@@ -662,6 +678,15 @@ function draw(t) {
         const d = Math.hypot(f.x2 - f.x1, f.y2 - f.y1);
         drawAD(2, (f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2, Math.max(0.5, Math.min(1.1, (d + 40) / AD_W)), f.x2 < f.x1);
       } else drawAD(fr, f.x2, f.y2 - 6, fr === 4 ? 0.8 + 0.08 * q : 0.75, false, fr === 7 ? 1 - q : 1);
+    } else if (f.kind === 'petitfire') { // the cone grows out of Gabumon's mouth toward the target (art points right)
+      const u = f.u, A = animOf(u), k = animScale(u), dir = u.face > 0 ? 1 : -1, fr = (PETIT_FIRE.find(s => f.t < s[1]) || PETIT_FIRE.at(-1))[0];
+      if (sfxImg.naturalWidth && A) {
+        const sc = 70 / SFX_W; // the cone is drawn ~70 px long (its hit reaches 150 px) so it doesn't swamp a Rookie
+        ctx.save(); ctx.translate(Math.round(u.x + dir * A.mouth[0] * k), Math.round(u.y + A.mouth[1] * k)); ctx.rotate(f.ang);
+        if (Math.cos(f.ang) < 0) ctx.scale(1, -1); // keep the art upright when firing left
+        ctx.globalAlpha = fr === 7 ? 1 - p : 1;
+        ctx.drawImage(sfxImg, fr * SFX_W, SFX_H, SFX_W, SFX_H, 0, -SFX_H * sc / 2, SFX_W * sc, SFX_H * sc); ctx.restore();
+      }
     } else if (f.kind === 'adframe') { // one All Delete frame on a unit (Omnimon's entrance vortex)
       drawAD(f.f, f.u.x, f.u.y - 14, f.sc * (0.6 + 0.4 * p), false, 1 - p * p);
     } else if (f.kind === 'skill') { // one-shot impact from the skill sheet, sized to the hit radius; follows its unit if given
@@ -758,7 +783,10 @@ if (new URLSearchParams(location.search).has('test')) {
   units = real; fxs = fxs.filter(f => f.u !== e);
   const n0 = units.length; spawnOmnimon(); const om = units.at(-1);
   ok('spawn button adds an Omnimon using All Delete', units.length === n0 + 1 && isOmni(om) && ultKind(om) === 'alldelete' && om.d.u === 'All Delete');
-  units.pop(); fxs.pop(); feed.shift(); feed.shift(); // drop the test unit's popup and feed line
+  units.pop(); fxs.pop(); feed.shift();
+  const gb = mk(0, 0); gb.d = ROSTER.find(d => d.n === 'Gabumon'); const at = (s, st) => { gb.state = s; gb.st = st; return customPose(gb); };
+  ok('Gabumon poses: charge F1→F3, Petit Fire F4→F8, then its sprite', at('charge', 0) === 0 && at('charge', DUR.charge * 0.99) === 2
+    && at('ult', 0) === 3 && at('ult', 0.84) === 7 && at('idle', 0) === -1); feed.shift(); // drop the test unit's popup and feed line
 }
 </script>
 </body>
