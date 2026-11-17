@@ -593,10 +593,10 @@ function draw(t) {
     ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, 0, W, H);
     text(w ? 'WINNER' : 'DRAW', CX, CY - 130, 34, '#ffe23a');
     if (w) {
-      // full-size art, never the tiny pixel map pose (15 sheets have no battle pose: attack is their full art)
-      // 5 sheets only have the pixel map pose: those scale by a whole number so the pixels stay crisp
-      const F = w.d.f, fr = F.battle || F.attack || F.hit || F.map, img = sheet(w.d.s), art = fr !== F.map;
-      const s = art ? Math.min(1.6, 150 / fr[3]) : Math.max(1, Math.floor(130 / fr[3]));
+      // action shot: the full-size attack pose, never the tiny pixel map pose unless that's all a sheet has
+      // (5 sheets): those scale by a whole number so the pixels stay crisp. Wide lunges are capped to fit.
+      const F = w.d.f, fr = F.attack || F.battle || F.hit || F.map, img = sheet(w.d.s), art = fr !== F.map;
+      const s = art ? Math.min(1.6, 150 / fr[3], 300 / fr[2]) : Math.max(1, Math.floor(130 / fr[3]));
       ctx.save(); ctx.imageSmoothingEnabled = art; ctx.imageSmoothingQuality = 'high'; // smooth, not blocky, when scaled
       ctx.translate(CX, CY + 60 + Math.sin(t * 2.4) * 2); ctx.scale(-s, s);
       ctx.drawImage(img, fr[0], fr[1], fr[2], fr[3], -fr[4], -fr[5], fr[2], fr[3]); ctx.restore();
