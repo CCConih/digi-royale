@@ -10,7 +10,7 @@ A single-screen, portrait auto battle royale: 35 random Digimon (Rookie–Mega) 
 ## Files
 - `index.html`: the whole game (one canvas, about 600 lines, no dependencies).
 - `roster.js`: `window.ROSTER`, 436 Digimon `{id, n name, st stage, t type, a attribute, fly, sz, s sheet path, f frame rects [x,y,w,h,anchorX,anchorY] per pose, u signature technique}`. Built by `tools/mkroster.py <digisurvivor-sprites.zip> roster.js <app.min.js>`.
-- `evo.js`: `window.EVO`, `{dex: [3 next-stage dex ids]}` for every Rookie, Champion and Ultimate. Built by `python -I tools/mkevo.py roster.js <app.min.js> evo.js` from a curated main-line table in the script, then the site's `G.DEX` `evo` lists, then random next-stage Digimon. It's seeded, so rebuilds are identical.
+- `evo.js`: `window.EVO`, `{dex: [3 next-stage dex ids]}` for every Rookie, Champion and Ultimate. Built by `python -I tools/mkevo.py roster.js <app.min.js> evo.js` from a curated main-line table in the script, then Digimon not used yet (from the site's `G.DEX` `evo` lists first), then the rest, so every Champion, Ultimate and Mega is reachable from some Rookie. It's seeded, so rebuilds are identical.
 - `sheets/`: 436 sprite sheets, one row of up to 4 poses (map, battle, attack, hit).
 - `vfx/`: `atlas.png` + `atlas.json` (technique effect frames) and `techs.json` (per-Digimon kind, palette, proj/melee/beam/trail, variant). Captured from the site's `G.VFX` in the browser; no script reproduces it.
 

@@ -633,6 +633,8 @@ if (new URLSearchParams(location.search).has('test')) {
   const agu = ROSTER.find(d => d.n === 'Agumon'), e = mk(0, 0); e.d = agu; e.lvl = 3; e.hpMax = e.hp = stageHp(2);
   evolve(e); ok('evolve: Rookie becomes one of its 3 Champion options', e.d.st === 3 && EVO[agu.id].includes(e.d.id) && e.hpMax === stageHp(3));
   ok('every Rookie–Ultimate has 3 next-stage options', ROSTER.filter(d => d.st >= 2 && d.st <= 4).every(d => EVO[d.id].length === 3 && EVO[d.id].every(i => DEX[i].st === d.st + 1)));
+  const reach = new Set(ROSTER.filter(d => d.st === 2).map(d => d.id)); for (const i of reach) (EVO[i] || []).forEach(j => reach.add(j));
+  ok('every Champion–Mega is reachable from some Rookie', ROSTER.every(d => d.st < 3 || d.st > 5 || reach.has(d.id)));
   const g = mk(0, 0); g.d = DEX[ROSTER.find(d => d.st === 5).id]; gainExp(g, 250); ok('250 EXP = 2 levels + 50 left over', g.lvl === 3 && g.exp === 50);
   ok('EXP crate grows as the zone shrinks (25 → 100)', expDrop(ZONE_R0) === 25 && expDrop(ZONE_R0 / 2) > 25 && expDrop(0) === 100);
   units = real; fxs = fxs.filter(f => f.u !== e); feed.shift(); // drop the test unit's popup and feed line

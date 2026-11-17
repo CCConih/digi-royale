@@ -51,18 +51,38 @@ for d in roster: by_name.setdefault(d['n'], d)  # roster has one duplicate name 
 
 rng = random.Random(7)
 evo, stats = {}, {'main': 0, 'site': 0, 'random': 0}
-for d in roster:
-    if d['st'] not in (2, 3, 4): continue
-    nxt = d['st'] + 1
-    main = [by_name[n]['id'] for n in MAIN.get(d['n'], [])]
-    assert all(by_id[i]['st'] == nxt for i in main), (d['n'], main)
-    pool = [i for i in site.get(d['id'], []) if i in by_id and by_id[i]['st'] == nxt and i not in main]
-    rng.shuffle(pool)
-    rest = [x['id'] for x in roster if x['st'] == nxt and x['id'] not in main + pool]
-    rng.shuffle(rest)
-    opts = (main + pool + rest)[:3]
-    stats['main'] += min(3, len(main)); stats['site'] += len([i for i in opts if i in pool]); stats['random'] += len([i for i in opts if i in rest])
-    evo[d['id']] = opts
+for st in (2, 3, 4):  # stage by stage, so every Digimon of the next stage is some option (coverage)
+    src = [d for d in roster if d['st'] == st]
+    nxt_ids = [x['id'] for x in roster if x['st'] == st + 1]
+    opts, pools = {}, {}
+    for d in src:
+        opts[d['id']] = [by_name[n]['id'] for n in MAIN.get(d['n'], [])][:3]
+        assert all(by_id[i]['st'] == st + 1 for i in opts[d['id']]), (d['n'], opts[d['id']])
+        pools[d['id']] = [i for i in site.get(d['id'], []) if i in by_id and by_id[i]['st'] == st + 1]
+        rng.shuffle(pools[d['id']])
+    stats['main'] += sum(len(v) for v in opts.values())
+    used = {i for v in opts.values() for i in v}
+    free = lambda k: len(opts[k]) < 3
+    # 1) round-robin: each Digimon with a free slot takes one still-unused Digimon from its own site list
+    order = [d['id'] for d in src]; rng.shuffle(order)
+    while True:
+        took = False
+        for k in order:
+            if not free(k): continue
+            c = next((i for i in pools[k] if i not in used), None)
+            if c is not None: opts[k].append(c); used.add(c); took = True; stats['site'] += 1
+        if not took: break
+    # 2) still-unused Digimon nobody's site list offers: hand each to a random free slot
+    left = [i for i in nxt_ids if i not in used]; rng.shuffle(left)
+    for i in left:
+        k = rng.choice([k for k in order if free(k)]); opts[k].append(i); used.add(i); stats['random'] += 1
+    # 3) fill remaining slots: own site list first, then any next-stage Digimon
+    for k in order:
+        for i in pools[k] + rng.sample(nxt_ids, len(nxt_ids)):
+            if not free(k): break
+            if i not in opts[k]: opts[k].append(i); stats['site' if i in pools[k] else 'random'] += 1
+    evo.update(opts)
+    assert set(nxt_ids) <= {i for v in opts.values() for i in v}, st
 
 assert len(MAIN) == len([n for n in MAIN if n in by_name]), [n for n in MAIN if n not in by_name]
 assert all(len(v) == 3 and len(set(v)) == 3 for v in evo.values())
