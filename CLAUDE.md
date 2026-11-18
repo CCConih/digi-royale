@@ -15,7 +15,7 @@ Custom attack animations (`ANIM` in index.html) work per Digimon. Each entry is 
 - Gabumon "Petit Fire" (cone): poses F1–F3 while charging and F4–F8 after firing (`vfx/gabumon-poses.png`). The effect frames F4–F8 of row 1 of `vfx/special-fx.png` grow out of his `mouth` toward the target, about 70 px long; the cone still hits out to 150 px. Built by `python -I tools/mkguide.py gabumon-poses tools/src/gabumon-poses.jpg vfx/gabumon-poses.png` and `python -I tools/mkguide.py special-fx tools/src/special-fx.jpg vfx/special-fx.png`. Rows 0 and 2 of special-fx.png (Scissors Execution = Crabmon, Lullaby Bubble = Otamamon) are cut but not used yet.
 
 ## Run
-`python -m http.server 8765` in this folder, then open http://localhost:8765/ (it must be served; `file://` won't load the sheets). `?test` runs 16 self-checks (combat, EXP, bounty, evolution, Omnimon, Gabumon poses, final duel and a live Gabumon scene) and logs PASS/FAIL to the console.
+`python -m http.server 8765` in this folder, then open http://localhost:8765/ (it must be served; `file://` won't load the sheets). `?test` runs 18 self-checks (combat, EXP, bounty, evolution, Omnimon, Gabumon poses, final duel, zone events and a live Gabumon scene) and logs PASS/FAIL to the console.
 
 ## Files
 - `index.html`: the whole game (one canvas, about 600 lines, no dependencies).
@@ -32,6 +32,7 @@ Custom attack animations (`ANIM` in index.html) work per Digimon. Each entry is 
 - Zone shrinks nonstop over 70 s; damage rises from 1% to 10% max HP/s as it shrinks. Digimon walk back in.
 - Ultimate: meter fills over time and from damage dealt/taken; fires the Digimon's signature technique in its archetype (projectile, melee, beam, dash, cone, chain, nova, aura, orbit, meteor, boomerang). Ult hits never refill the caster's meter. Fire burns, ice/water slow, electric pierces.
 - Supply drops every 5 s: shield, heal, full ult, or EXP. An EXP crate gives 25 EXP at the full circle, rising to 100 as the zone closes (`DROP.expMin`/`expMax`).
+- Zone events (`ZEV`, `updateEvent`): once a round, at 25 s or when 30% of the field is left (about 40% into a round in sims, 10–12 left), one random event hits, with a title over the arena. Meteor shower: for 4 s rocks fall, half on a Digimon, half anywhere; each shows a red circle for 0.8 s, then hits everyone inside it for 15% max HP with a knock-back (no KO credit, feed says "fell to a meteor"); about 0.3–0.9 meteor KOs a round. Data storm: 5 s with everyone's movement and attacks slowed 40%. EXP rain: 6 EXP crates drop at once.
 - EXP: 100 EXP (`LEVEL_EXP`) = level up: max HP ×1.15, heal 40%, damage ×1.1, size ×1.05. A KO gives 100 EXP plus a bounty of 50 per level the victim had over the killer (`BOUNTY`), so knocking out an evolved Digimon lets an underdog catch up. A purple line under the HP and ult bars shows progress to the next level.
 - ROOKIES mode only: at levels 3, 6 and 9 a Digimon digivolves into a random one of its 3 `EVO` options (Rookie → Champion → Ultimate → Mega). HP and damage scale by the stage formulas, size follows the new stage, and the technique and type switch to the new form. The ranged/melee role is kept.
 - `KIND_DMG` and `MODES.rookie.kindDmg` are sim-tuned so each archetype wins 0.7–1.5× its fair share.

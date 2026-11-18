@@ -78,6 +78,13 @@ let units, shots, fxs, feed, time, speed = 1, over, endT, drops, nextDrop;
 const DROP = { every: 5, fall: 0.9, life: 14, grab: 90, shield: 0.4, shieldTime: 8, heal: 0.4, expMin: 25, expMax: 100 };
 const DROP_KIND = { shield: { c: '#4fd6ff', txt: 'SHIELD!' }, heal: { c: '#5be36b', txt: '+HEAL' }, ult: { c: '#ffd23a', txt: 'ULT READY!' },
   exp: { c: '#c77dff', txt: 'EXP' } };
+// Zone events: once a round, at ZEV.at s or when the field is down to ZEV.field of its start (sims: ~40% into a round, 10–12 left), one random event hits.
+// meteor: rocks fall for `secs`, each warns for `warn` s, then hits everyone within r for dmg × max HP (no KO credit).
+// storm: a data storm slows every Digimon's movement and attacks. rain: n EXP crates drop at once.
+const ZEV = { at: 25, field: 0.3, meteor: { secs: 4, every: 0.3, warn: 0.8, r: 32, dmg: 0.15 }, storm: { secs: 5, slow: 0.4 }, rain: { n: 6 } };
+const ZEV_INFO = { meteor: { txt: 'METEOR SHOWER!', sub: 'Watch the red circles', c: '#ff7a3a' },
+  storm: { txt: 'DATA STORM!', sub: 'Everyone is slowed', c: '#7ad7ff' }, rain: { txt: 'EXP RAIN!', sub: 'Grab the crates', c: '#c77dff' } };
+let zev = null, zevDone = false, meteors = [], startN = 0;
 const expDrop = zr => Math.round(lerp(DROP.expMax, DROP.expMin, Math.min(1, zr / ZONE_R0)));
 
 function newGame() {
@@ -90,6 +97,7 @@ function newGame() {
   });
   units.forEach(u => { sheet(u.d.s); if (MODES[MODE].evolve) preloadEvo(u.d); });
   shots = []; fxs = []; feed = []; drops = []; nextDrop = 3; time = 0; over = false; endT = 0; shake = 0;
+  zev = null; zevDone = false; meteors = []; startN = units.length;
   fav = null; bannerMsg = null; duelT = 0; duelDone = units.length <= 2; // a 2-Digimon round has no "final" moment
 }
 function mkUnit(d, x, y) {
@@ -171,7 +179,7 @@ const zoneDps = r => lerp(ZONE_DPS_MAX, ZONE_DPS_MIN, Math.min(1, r / ZONE_R0));
 
 function setState(u, s) { u.state = s; u.st = 0; u.hitDone = false; if (s !== 'ult') u.dash = null; }
 
-function damage(u, amt, from, ranged = false) { // only melee knocks back and staggers
+function damage(u, amt, from, ranged = false, cause = 'the zone') { // only melee knocks back and staggers
   if (u.dead) return;
   if (from && u.shield > 0) { const a = Math.min(u.shield, amt); u.shield -= a; amt -= a; if (amt <= 0) { u.flash = 0.06; return; } }
   u.hp -= amt;
@@ -179,7 +187,7 @@ function damage(u, amt, from, ranged = false) { // only melee knocks back and st
   if (from && !ranged) { const dx = u.x - from.x, dy = u.y - from.y, l = Math.hypot(dx, dy) || 1; u.vx += dx / l * 60; u.vy += dy / l * 60; }
   if (u.hp <= 0) {
     u.hp = 0; u.dead = true; setState(u, 'faint');
-    feed.unshift({ txt: from ? `${from.d.n} KO'd ${u.d.n}` : `${u.d.n} fell to the zone`, t: 4 });
+    feed.unshift({ txt: from ? `${from.d.n} KO'd ${u.d.n}` : `${u.d.n} fell to ${cause}`, t: 4 });
     // a KO is worth one level, plus a bounty for each level the victim had over the killer (comebacks vs snowballing)
     if (from && !from.dead) { from.kills++; gainExp(from, LEVEL_EXP + BOUNTY * Math.max(0, u.lvl - from.lvl)); }
     if (u === fav) banner(`${u.d.n} fell!`, '#ff6a6a');
@@ -380,12 +388,37 @@ function glow(x, y, r, c, a) {
   ctx.globalAlpha = a; ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2); ctx.globalAlpha = 1;
 }
 
+const inZone = (zr, k) => { // random point within k × the zone radius, kept on screen
+  const a = rnd(0, Math.PI * 2), r = Math.sqrt(Math.random()) * zr * k;
+  return { x: Math.max(20, Math.min(W - 20, CX + Math.cos(a) * r)), y: Math.max(TOP + 30, Math.min(BOT - 10, CY + Math.sin(a) * r)) };
+};
+function updateEvent(dt, zr, alive) {
+  if (!zevDone && zr > 60 && (time >= ZEV.at || alive.length <= startN * ZEV.field)) {
+    zevDone = true; zev = { kind: pick(Object.keys(ZEV_INFO)), t: 0, next: 0 };
+    if (zev.kind === 'rain') for (let i = 0; i < ZEV.rain.n; i++) drops.push({ ...inZone(zr, 0.75), kind: 'exp', t: 0 });
+  }
+  if (zev) {
+    zev.t += dt;
+    if (zev.kind === 'meteor' && zev.t < ZEV.meteor.secs && (zev.next -= dt) <= 0) {
+      zev.next = ZEV.meteor.every; const v = pick(alive); // half land on a Digimon, half anywhere in the zone
+      meteors.push({ ...(v && Math.random() < 0.5 ? { x: v.x, y: v.y } : inZone(zr, 0.85)), t: 0 });
+    }
+    if (zev.t > { meteor: ZEV.meteor.secs + ZEV.meteor.warn, storm: ZEV.storm.secs, rain: 2.2 }[zev.kind]) zev = null;
+  }
+  for (const m of meteors) if ((m.t += dt) >= ZEV.meteor.warn && !m.hit) {
+    m.hit = true; shake = Math.max(shake, 0.15);
+    fxs.push({ kind: 'blast', x: m.x, y: m.y, r: ZEV.meteor.r, c: '#ff7a3a', t: 0, life: 0.45 });
+    for (const u of alive) { const dx = u.x - m.x, dy = u.y - m.y, d = Math.hypot(dx, dy);
+      if (d < ZEV.meteor.r + u.r) { u.flash = 0.12; u.vx += dx / (d || 1) * 80; u.vy += dy / (d || 1) * 80; damage(u, u.hpMax * ZEV.meteor.dmg, null, false, 'a meteor'); } }
+  }
+  meteors = meteors.filter(m => !m.hit);
+}
+const stormSlow = () => zev && zev.kind === 'storm' ? ZEV.storm.slow : 0;
+
 function updateDrops(dt, zr, alive) {
   if (time >= nextDrop && zr > 40) {
     nextDrop = time + DROP.every * rnd(0.7, 1.3);
-    const a = rnd(0, Math.PI * 2), r = Math.sqrt(Math.random()) * zr * 0.75;
-    drops.push({ x: Math.max(20, Math.min(W - 20, CX + Math.cos(a) * r)), y: Math.max(TOP + 30, Math.min(BOT - 10, CY + Math.sin(a) * r)),
-      kind: pick(Object.keys(DROP_KIND)), t: 0 });
+    drops.push({ ...inZone(zr, 0.75), kind: pick(Object.keys(DROP_KIND)), t: 0 });
   }
   for (const d of drops) {
     d.t += dt;
@@ -407,7 +440,8 @@ function updateDrops(dt, zr, alive) {
 function update(dt) {
   time += dt; shake = Math.max(0, shake - dt);
   const zr = zoneR(time), alive = units.filter(u => !u.dead);
-  updateDrops(dt, zr, alive);
+  updateDrops(dt, zr, alive); updateEvent(dt, zr, alive);
+  const storm = stormSlow();
   for (const u of units) {
     u.st += dt; u.flash = Math.max(0, u.flash - dt);
     if (u.dead) { if (u.st > DUR.faint + DUR.dissolve) u.gone = true; continue; }
@@ -442,7 +476,7 @@ function update(dt) {
         for (const p of drops) if (p.t >= DROP.fall) { const pd = Math.hypot(p.x - u.x, p.y - u.y); if (pd < bd && pd < d) { bd = pd; best = p; } }
         if (best) { mx = best.x - u.x; my = best.y - u.y; }
       }
-      u.cd -= dt * (1 - (u.slow || 0)); // slow also drags attack speed (site only slows movement; that barely mattered in a brawl)
+      u.cd -= dt * (1 - Math.max(u.slow || 0, storm)); // slow also drags attack speed (site only slows movement; that barely mattered in a brawl)
       if (u.ult >= ULT.full && d <= ultRange(u) &&(u.state === 'idle' || u.state === 'walk')) {
         setState(u, 'charge'); u.ultAt = t;
         fxs.push({ kind: 'name', u, txt: u.d.u + '!', c: ultColor(u), t: 0, life: 1.4 });
@@ -463,7 +497,7 @@ function update(dt) {
     }
     const ml = Math.hypot(mx, my), busy = !outside && ['attack', 'hurt', 'charge', 'ult'].includes(u.state); // never stuck in the storm
     if (ml > 0 && !busy) {
-      const sp = u.spd * (1 - (u.slow || 0));
+      const sp = u.spd * (1 - Math.max(u.slow || 0, storm));
       u.x += mx / ml * sp * dt; u.y += my / ml * sp * dt;
       if (u.state === 'idle') u.state = 'walk';
       u.phase += 2.6 * dt;
@@ -645,7 +679,23 @@ function draw(t) {
     const p = d.t / DROP.fall; ctx.globalAlpha = 0.3 * p; ctx.fillStyle = '#000';
     ctx.beginPath(); ctx.ellipse(d.x, d.y, 9 * p, 3.5 * p, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
   }
+  for (const m of meteors) { const p = m.t / ZEV.meteor.warn; // red warning circle fills up until the rock lands
+    ctx.fillStyle = 'rgba(255,70,40,0.18)'; ctx.beginPath(); ctx.arc(m.x, m.y, ZEV.meteor.r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#ff5a3a'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = 'rgba(255,90,40,0.35)'; ctx.beginPath(); ctx.arc(m.x, m.y, ZEV.meteor.r * p, 0, Math.PI * 2); ctx.fill();
+  }
   [...units].sort((a, b) => a.y - b.y).forEach(u => drawUnit(u, t));
+  for (const m of meteors) { const p = m.t / ZEV.meteor.warn, x = m.x + 90 * (1 - p), y = m.y - 260 * (1 - p); // rock streaks in from the upper right
+    ctx.strokeStyle = 'rgba(255,200,120,0.6)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 18, y - 52); ctx.stroke();
+    ctx.fillStyle = '#ffb14a'; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff3c0'; ctx.beginPath(); ctx.arc(x - 1, y - 1, 2, 0, Math.PI * 2); ctx.fill();
+  }
+  if (stormSlow()) { // data storm: blue tint and fast diagonal streaks over the arena
+    const a = Math.min(1, zev.t * 3, (ZEV.storm.secs - zev.t) * 3);
+    ctx.fillStyle = `rgba(60,140,255,${0.12 * a})`; ctx.fillRect(0, TOP, W, BOT - TOP);
+    ctx.strokeStyle = `rgba(180,230,255,${0.45 * a})`; ctx.lineWidth = 1;
+    for (let i = 0; i < 36; i++) { const x = (i * 97 + t * 420) % (W + 60) - 30, y = TOP + (i * 61 + t * 260) % (BOT - TOP);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 14, y - 9); ctx.stroke(); }
+  }
   for (const d of drops) if (d.t < DROP.fall) drawCrate(d, t);
   for (const s of shots) if (!drawBasic(s.row, 0, s.x, s.y, Math.atan2(s.vy, s.vx), 0.28)) { // ~31 px element bolt; dot until the sheet loads
     ctx.fillStyle = s.c; ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2); ctx.fill();
@@ -769,6 +819,9 @@ function draw(t) {
   if (duelT > 0 && !over) { // final duel: title over the arena while time runs slow
     ctx.globalAlpha = Math.min(1, duelT * 2); text('FINAL BATTLE', CX, TOP + 72, 26, '#ff6a6a'); text(duelNames, CX, TOP + 92, 12, '#fff'); ctx.globalAlpha = 1;
   }
+  if (zev && zev.t < 2.2 && !over && duelT <= 0) { const z = ZEV_INFO[zev.kind]; // event title, same spot as FINAL BATTLE
+    ctx.globalAlpha = Math.min(1, (2.2 - zev.t) * 2); text(z.txt, CX, TOP + 72, 24, z.c); text(z.sub, CX, TOP + 92, 12, '#fff'); ctx.globalAlpha = 1;
+  }
   if (bannerMsg && !over) { ctx.globalAlpha = Math.min(1, bannerMsg.t * 2); text(bannerMsg.txt, CX, TOP + 122, 15, bannerMsg.c); ctx.globalAlpha = 1; }
   if (over && endT > 0.6) {
     const w = units.find(u => !u.dead);
@@ -845,6 +898,13 @@ if (new URLSearchParams(location.search).has('test')) {
     units = [a, b, c]; duelDone = false; c.dead = true; update(0.001);
     ok('final duel: 2 left starts the slow-mo title once', duelT === DUEL.secs && duelDone && duelNames.includes(' vs '));
     ({ units, duelT, duelDone } = keep); }
+  { const keep = { units, zev, zevDone, meteors, drops, time, startN, shake }, a = mkUnit(DEX[1], 100, CY), b = mkUnit(DEX[1], 220, CY);
+    units = [a, b]; time = 0; startN = 2; zevDone = false; zev = null; meteors = [{ x: 100, y: CY, t: ZEV.meteor.warn }];
+    updateEvent(0.001, ZONE_R0, units); feed.length = 0;
+    ok('meteor hits only inside its circle, for 15% max HP', Math.abs(a.hp - a.hpMax * 0.85) < 1e-6 && b.hp === b.hpMax && !meteors.length && !zev);
+    time = ZEV.at; updateEvent(0.001, ZONE_R0, units);
+    ok('zone event starts once at ZEV.at', zevDone && zev && ZEV_INFO[zev.kind]);
+    ({ units, zev, zevDone, meteors, drops, time, startN, shake } = keep); fxs = fxs.filter(f => f.c !== '#ff7a3a'); }
   vfxReady.then(() => { // live scene (needs techs.json for Gabumon's cone): his cone KOs the Agumon in front; then an EXP crate digivolves him mid-cone
     const keep = { units, fxs, drops, feed, time, MODE }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5;
     const gm = mkUnit(ROSTER.find(d => d.n === 'Gabumon'), CX, CY), front = mkUnit(ROSTER.find(d => d.n === 'Agumon'), CX + 45, CY), back = mkUnit(ROSTER.find(d => d.n === 'Palmon'), CX - 70, CY);
