@@ -25,7 +25,7 @@ const N = 35;
 const MODES = { mixed: { label: 'MIXED', pool: d => d.st >= 2 && d.st <= 5, n: N },
   // retuned after the ult self-refill fix over 2×450 rookie rounds: every archetype 0.7–1.5× its fair share of wins
   // 40 random Rookies at 2× HP: sims had 60% of a full 60-Rookie field dead in 10 s; this gives ~19% and ~54 s rounds
-  rookie: { label: 'ROOKIES', pool: d => d.st === 2, n: 40, hpMul: 2, rangedCd: 0.75, evolve: true, // 0.75: ranged win share = field share (38%)
+  rookie: { label: 'ROOKIES', pool: d => d.st === 2, n: 40, hpMul: 2, rangedCd: 0.85, evolve: true, // 0.85 with survival AI: ranged win share ≈ field share (~40% vs 38%, 250 sims)
     kindDmg: { projectile: 1.51, melee: 1.5, beam: 1.69, dash: 1.97, cone: 1.35, chain: 1.03, nova: 0.81, aura: 0.9, orbit: 0.84, meteor: 1.02, boomerang: 2.12 } } }; // beam/meteor/boomerang have 1 Rookie each: their rates are one Digimon's luck
 let MODE = 'mixed';
 // shot damage × attacker dmg, cooldown multiplier, reach in px.
@@ -504,6 +504,31 @@ function updateDrops(dt, zr, alive) {
   drops = drops.filter(d => !d.taken && d.t < DROP.fall + DROP.life);
 }
 
+// Survival instincts, first match wins: dodge a meteor circle; when hurt, run to a heal/shield crate or back off from a
+// healthier melee foe (bending toward the centre so nobody flees into the storm); one level from digivolving, chase EXP crates;
+// low ult, take an ult crate; otherwise grab any crate that is close and nearer than the fight.
+const SURV = { lowHp: 0.35, healSeek: 260, flee: 110, expSeek: 260, ultSeek: 150 };
+function survive(u, t, d, zr) {
+  for (const m of meteors) { const md = Math.hypot(u.x - m.x, u.y - m.y) || 1;
+    if (md < ZEV.meteor.r + u.r) return { x: u.x + (u.x - m.x) / md * 40, y: u.y + (u.y - m.y) / md * 40, why: 'dodge' }; }
+  const crate = (kinds, range) => { let best = null, bd = range;
+    for (const p of drops) if (p.t >= DROP.fall && kinds.includes(p.kind) && Math.hypot(p.x - CX, p.y - CY) < zr) {
+      const pd = Math.hypot(p.x - u.x, p.y - u.y); if (pd < bd) { bd = pd; best = p; } }
+    return best && { x: best.x, y: best.y }; };
+  const go = (c, why) => c && Object.assign(c, { why });
+  if (u.hp < u.hpMax * SURV.lowHp) {
+    const c = go(crate(['heal', 'shield'], SURV.healSeek), 'heal'); if (c) return c;
+    if (t && !t.ranged && d < SURV.flee && t.hp / t.hpMax > u.hp / u.hpMax) { // you can outrun a brawler, not a shot
+      const cd = Math.hypot(CX - u.x, CY - u.y) || 1, pull = Math.max(0, cd / Math.max(zr, 1) - 0.4) * 2.5;
+      return { x: u.x - (t.x - u.x) / d * 40 + (CX - u.x) / cd * 40 * pull, y: u.y - (t.y - u.y) / d * 40 + (CY - u.y) / cd * 40 * pull, why: 'flee' };
+    }
+  }
+  if (MODES[MODE].evolve && EVO[u.d.id] && (u.lvl + 1) % EVOLVE_EVERY === 0) { const c = go(crate(['exp'], SURV.expSeek), 'exp'); if (c) return c; }
+  if (u.ult < ULT.full * 0.5) { const c = go(crate(['ult'], SURV.ultSeek), 'crate'); if (c) return c; }
+  return go(crate(Object.keys(DROP_KIND), Math.min(DROP.grab, d)), 'crate');
+}
+const GOAL_ICON = { heal: ['+', '#5be36b'], flee: ['!', '#ff6a6a'], exp: ['★', '#c77dff'], dodge: ['!', '#ff9a3a'] };
+
 function update(dt) {
   time += dt; shake = Math.max(0, shake - dt);
   const zr = zoneR(time), alive = units.filter(u => !u.dead);
@@ -524,30 +549,29 @@ function update(dt) {
     if (u.state === 'charge' && u.st >= DUR.charge) { fireUlt(u); setState(u, 'ult'); }
     else if (u.state in DUR && u.st >= (u.state === 'ult' && animOf(u) ? animOf(u).seq.at(-1)[1] : DUR[u.state])) setState(u, 'idle'); // custom animations hold their poses to the end
 
-    // pick target: nearest living enemy
+    // pick target: nearest living enemy (preferring wounded foes made ranged win 50–65% of rounds in sims)
     if ((u.retarget -= dt) <= 0 || !u.target || u.target.dead) {
       u.retarget = 0.5; u.target = null; let best = 1e9;
-      for (const o of alive) if (o !== u) { const d = Math.hypot(o.x - u.x, o.y - u.y); if (d < best) { best = d; u.target = o; } }
+      for (const o of alive) if (o !== u) { const d = Math.hypot(o.x - u.x, o.y - u.y);
+        if (d < best) { best = d; u.target = o; } }
     }
     const t = u.target, outside = Math.hypot(u.x - CX, u.y - CY) > zr;
     let mx = 0, my = 0;
-    if (outside) { mx = CX - u.x; my = CY - u.y; damage(u, u.hpMax * zoneDps(zr) * dt, null); }
+    if (outside) { mx = CX - u.x; my = CY - u.y; u.goal = null; damage(u, u.hpMax * zoneDps(zr) * dt, null); }
     if (t) {
       const dx = t.x - u.x, dy = t.y - u.y, d = Math.hypot(dx, dy) || 1, reach = u.ranged ? u.range : u.r + t.r + 4;
       if (Math.abs(dx) > 2 && u.state !== 'charge' && u.state !== 'ult') u.face = dx > 0 ? 1 : -1; // hold facing through an attack
       if (!outside) {
         if (d > reach) { mx = dx; my = dy; } else if (u.ranged && d < 55) { mx = -dx; my = -dy; }
         if (u.ult >= ULT.full && d > ultRange(u)) { mx = dx; my = dy; } // close in for short-range ultimates
-        // grab a landed crate if one is close and nearer than the fight
-        let best = null, bd = DROP.grab;
-        for (const p of drops) if (p.t >= DROP.fall) { const pd = Math.hypot(p.x - u.x, p.y - u.y); if (pd < bd && pd < d) { bd = pd; best = p; } }
-        if (best) { mx = best.x - u.x; my = best.y - u.y; }
+        const g = survive(u, t, d, zr); u.goal = g && g.why; // survival instincts override the fight; attacks still fire at anything in reach
+        if (g) { mx = g.x - u.x; my = g.y - u.y; }
       }
       u.cd -= dt * (1 - Math.max(u.slow || 0, storm)); // slow also drags attack speed (site only slows movement; that barely mattered in a brawl)
       if (u.ult >= ULT.full && d <= ultRange(u) &&(u.state === 'idle' || u.state === 'walk')) {
         setState(u, 'charge'); u.ultAt = t;
         fxs.push({ kind: 'name', u, txt: u.d.u + '!', c: ultColor(u), t: 0, life: 1.4 });
-      } else if (d <= reach + 2 && u.cd <= 0 && (u.state === 'idle' || u.state === 'walk')) {
+      } else if (d <= reach + 2 && u.cd <= 0 && u.goal !== 'flee' && (u.state === 'idle' || u.state === 'walk')) { // a fleeing Digimon runs, it doesn't shoot back
         u.cd = rnd(0.9, 1.3) * (u.ranged ? MODES[MODE].rangedCd || RANGED.cd : 1);
         if (u.ranged) {
           setState(u, 'shoot');
@@ -695,6 +719,9 @@ function drawUnit(u, t) {
     ctx.fillStyle = m >= 1 ? (Math.sin(t * 16) > 0 ? '#fff' : '#4fd6ff') : '#2f9fd0'; ctx.fillRect(bx, by + 2, bw * m, 1);
     ctx.fillStyle = '#c77dff'; ctx.fillRect(bx, by + 3, bw * (u.exp || 0) / LEVEL_EXP, 1); // exp toward next level
     if (u.lvl > 1) { ctx.fillStyle = '#ffe58a'; ctx.font = 'bold 7px sans-serif'; ctx.textAlign = 'left'; ctx.fillText('Lv' + u.lvl, bx + bw + 2, by + 3); }
+    const gi = GOAL_ICON[u.goal]; // what it's doing instead of fighting: + heal, ! flee or dodge, ★ EXP for digivolving
+    if (gi) { ctx.fillStyle = '#000c'; ctx.beginPath(); ctx.arc(bx - 6, by + 1, 5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = gi[1]; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = gi[1]; ctx.font = 'bold 8px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(gi[0], bx - 6, by + 1.5); ctx.textBaseline = 'alphabetic'; }
   }
 }
 
@@ -973,6 +1000,15 @@ if (new URLSearchParams(location.search).has('test')) {
     time = ZEV.at; updateEvent(0.001, ZONE_R0, units);
     ok('zone event starts once at ZEV.at', zevDone && zev && ZEV_INFO[zev.kind]);
     ({ units, zev, zevDone, meteors, drops, time, startN, shake, fxs } = keep); }
+  { const keep = { drops, meteors, MODE }, a = mkUnit(DEX[1], CX, CY), foe = mkUnit(DEX[1], CX + 30, CY); foe.ranged = false;
+    drops = [{ x: CX - 200, y: CY, kind: 'heal', t: 9 }, { x: CX, y: CY + 150, kind: 'exp', t: 9 }]; meteors = [];
+    a.hp = a.hpMax * 0.2; const heal = survive(a, foe, 30, ZONE_R0);
+    drops = drops.slice(1); const flee = survive(a, foe, 30, ZONE_R0);
+    a.hp = a.hpMax; MODE = 'rookie'; a.lvl = EVOLVE_EVERY - 1; const exp = survive(a, foe, 30, ZONE_R0);
+    meteors = [{ x: CX + 5, y: CY, t: 0 }]; const dodge = survive(a, foe, 30, ZONE_R0);
+    ok('survival: hurt → heal crate, else flee; about to digivolve → EXP crate; meteor circle → dodge',
+      heal.why === 'heal' && heal.x < CX && flee.why === 'flee' && flee.x < CX && exp.why === 'exp' && exp.y > CY && dodge.why === 'dodge' && dodge.x < CX);
+    ({ drops, meteors, MODE } = keep); }
   vfxReady.then(() => { // live scene (needs techs.json for Gabumon's cone): his cone KOs the Agumon in front; then an EXP crate digivolves him mid-cone
     const keep = { units, fxs, drops, feed, time, MODE, zevDone, meteors }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5; zevDone = true; // no zone event mid-test
     const gm = mkUnit(ROSTER.find(d => d.n === 'Gabumon'), CX, CY), front = mkUnit(ROSTER.find(d => d.n === 'Agumon'), CX + 45, CY), back = mkUnit(ROSTER.find(d => d.n === 'Palmon'), CX - 70, CY);
