@@ -540,6 +540,7 @@ function survive(u, t, d, zr) {
 const GOAL_ICON = { heal: ['+', '#5be36b'], flee: ['!', '#ff6a6a'], exp: ['★', '#c77dff'], dodge: ['!', '#ff9a3a'] };
 
 function update(dt) {
+  if (over) { endT += dt; return; } // winner decided: the whole world freezes (zone, drops, events, animations)
   time += dt; shake = Math.max(0, shake - dt);
   const zr = zoneR(time), alive = units.filter(u => !u.dead);
   updateDrops(dt, zr, alive); updateEvent(dt, zr, alive);
@@ -624,7 +625,6 @@ function update(dt) {
   const left = units.filter(u => !u.dead);
   if (!duelDone && left.length === 2) { duelDone = true; duelT = DUEL.secs; duelNames = `${left[0].d.n} vs ${left[1].d.n}`; }
   if (!over && left.length <= 1) { over = true; endT = 0; duelT = 0; }
-  if (over) endT += dt;
 }
 
 // procedural animator, formulas from ANIMATION_NOTES.md
@@ -769,9 +769,9 @@ const speedBtn = { x: W - 54, y: 12, w: 44, h: 30 }, modeBtn = { x: W - 150, y: 
 const omniBtn = { x: W - 104, y: BOT + 2, w: 98, h: 20 }; // bottom bar, right of the zone text
 const inBtn = (b, x, y) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
 
-function draw(t) {
+function draw(t, ui = t) { // t drives the world's animations, ui the winner card (it keeps moving after the world freezes)
   ctx.fillStyle = '#0b0f14'; ctx.fillRect(0, 0, W, H);
-  ctx.save(); if (shake > 0) ctx.translate(rnd(-4, 4) * shake / 0.35, rnd(-4, 4) * shake / 0.35); // All Delete screen shake (world only, not the HUD)
+  ctx.save(); if (shake > 0 && !over) ctx.translate(rnd(-4, 4) * shake / 0.35, rnd(-4, 4) * shake / 0.35); // All Delete screen shake (world only, not the HUD)
   ctx.drawImage(ground, 0, TOP);
   // storm outside the zone
   const zr = zoneR(time);
@@ -938,7 +938,7 @@ function draw(t) {
       const F = w.d.f, fr = F.attack || F.battle || F.hit || F.map, img = sheet(w.d.s), art = fr !== F.map;
       const s = art ? Math.min(1.6, 150 / fr[3], 300 / fr[2]) : Math.max(1, Math.floor(130 / fr[3]));
       ctx.save(); ctx.imageSmoothingEnabled = art; ctx.imageSmoothingQuality = 'high'; // smooth, not blocky, when scaled
-      ctx.translate(CX, CY + 60 + Math.sin(t * 2.4) * 2); ctx.scale(-s, s);
+      ctx.translate(CX, CY + 60 + Math.sin(ui * 2.4) * 2); ctx.scale(-s, s);
       ctx.drawImage(img, fr[0], fr[1], fr[2], fr[3], -fr[4], -fr[5], fr[2], fr[3]); ctx.restore();
       text(w.d.n, CX, CY + 100, 22, '#fff');
       text(`${w.kills} KOs · Lv${w.lvl}`, CX, CY + 122, 13, '#9fb3c8');
@@ -962,13 +962,14 @@ cv.addEventListener('pointerdown', e => {
 });
 
 newGame();
-let last = performance.now();
+let last = performance.now(), worldT = 0;
 function frame(now) {
   const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now; // the first rAF stamp can be older than `last`
   const slow = duelT > 0 ? DUEL.slow : 1; duelT = Math.max(0, duelT - dt); // final-duel slow motion runs on real time
   if (bannerMsg && (bannerMsg.t -= dt) <= 0) bannerMsg = null;
   for (let i = 0; i < speed; i++) update(dt * slow);
-  draw(now / 1000);
+  if (!over) worldT = now / 1000; // frozen at the final blow
+  draw(worldT, now / 1000);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -991,22 +992,27 @@ if (new URLSearchParams(location.search).has('test')) {
   const g = mk(0, 0); g.d = DEX[ROSTER.find(d => d.st === 5).id]; gainExp(g, 250); ok('250 EXP = 2 levels + 50 left over', g.lvl === 3 && g.exp === 50);
   ok('EXP crate grows as the zone shrinks (25 → 100)', expDrop(ZONE_R0) === 25 && expDrop(ZONE_R0 / 2) > 25 && expDrop(0) === 100);
   units = real; fxs = fxs.filter(f => f.u !== e);
-  { const keep = { units, MODE, fxs, drops, feed }; MODE = 'swarm'; newGame();
+  { const keep = { units, MODE, fxs, drops, feed, shots, nextDrop, time, over, endT, shake, zev, zevDone, meteors, startN, fav, bannerMsg, duelT, duelDone }; MODE = 'swarm'; newGame(); // newGame resets all of these
     ok('SWARM: 150 Rookies with repeats, all inside its arena-wide starting circle', units.length === 150 && units.every(u => u.d.st === 2)
       && new Set(units.map(u => u.d.id)).size < 150 && units.every(u => Math.hypot(u.x - CX, u.y - CY) < zoneR(0)) && zoneR(0) > ZONE_R0);
-    MODE = keep.MODE; ({ units, fxs, drops, feed } = keep); }
+    ({ units, MODE, fxs, drops, feed, shots, nextDrop, time, over, endT, shake, zev, zevDone, meteors, startN, fav, bannerMsg, duelT, duelDone } = keep); }
+  const wasOver = over; over = false; // a finished round would make the button start a new one
   const n0 = units.length; spawnOmnimon(); const om = units.at(-1);
   ok('spawn button adds an Omnimon using All Delete', units.length === n0 + 1 && isOmni(om) && ultKind(om) === 'alldelete' && om.d.u === 'All Delete');
-  units.pop(); fxs.pop(); feed.shift();
+  units.pop(); fxs.pop(); feed.shift(); over = wasOver;
   const gb = mk(0, 0); gb.d = ROSTER.find(d => d.n === 'Gabumon'); const at = (s, st) => { gb.state = s; gb.st = st; return customPose(gb); };
   ok('Gabumon poses: charge F1→F3, Petit Fire F4→F8, then its sprite', at('charge', 0) === 0 && at('charge', DUR.charge * 0.99) === 2
     && at('ult', 0) === 3 && at('ult', 0.84) === 7 && at('idle', 0) === -1); feed.shift(); // drop the test unit's popup and feed line
   { const mega = DEX[ROSTER.find(d => d.st === 5).id], k = mk(0, 0), v = mk(5, 0); k.d = v.d = mega; v.lvl = 4; v.hp = 1; damage(v, 5, k); feed.shift();
     ok('KO bounty: beating a foe 3 levels up = 100 + 3×50 EXP', k.lvl === 3 && k.exp === 50); }
-  { const keep = { units, duelT, duelDone }, a = mkUnit(DEX[1], 60, CY), b = mkUnit(DEX[1], 260, CY), c = mkUnit(DEX[1], 160, CY - 200);
-    units = [a, b, c]; duelDone = false; c.dead = true; update(0.001);
+  { const keep = { units, duelT, duelDone, over }, a = mkUnit(DEX[1], 60, CY), b = mkUnit(DEX[1], 260, CY), c = mkUnit(DEX[1], 160, CY - 200);
+    units = [a, b, c]; duelDone = false; over = false; c.dead = true; update(0.001);
     ok('final duel: 2 left starts the slow-mo title once', duelT === DUEL.secs && duelDone && duelNames.includes(' vs '));
-    ({ units, duelT, duelDone } = keep); }
+    ({ units, duelT, duelDone, over } = keep); }
+  { const keep = { units, over, endT, time }, a = mkUnit(DEX[1], 60, CY), b = mkUnit(DEX[1], 75, CY); units = [a, b];
+    over = true; endT = 0; const t0 = time, x0 = a.x, st0 = a.st; update(1);
+    ok('after the winner is decided nothing moves: time, units and animations stay frozen', time === t0 && a.x === x0 && a.st === st0 && endT === 1);
+    ({ units, over, endT, time } = keep); }
   { const keep = { units, zev, zevDone, meteors, drops, time, startN, shake, fxs: [...fxs] }, a = mkUnit(DEX[1], 100, CY), b = mkUnit(DEX[1], 220, CY);
     units = [a, b]; time = 0; startN = 2; zevDone = false; zev = null; meteors = [{ x: 100, y: CY, t: ZEV.meteor.warn }];
     updateEvent(0.001, ZONE_R0, units); feed.length = 0;
@@ -1024,7 +1030,7 @@ if (new URLSearchParams(location.search).has('test')) {
       heal.why === 'heal' && heal.x < CX && flee.why === 'flee' && flee.x < CX && exp.why === 'exp' && exp.y > CY && dodge.why === 'dodge' && dodge.x < CX);
     ({ drops, meteors, MODE } = keep); }
   vfxReady.then(() => { // live scene (needs techs.json for Gabumon's cone): his cone KOs the Agumon in front; then an EXP crate digivolves him mid-cone
-    const keep = { units, fxs, drops, feed, time, MODE, zevDone, meteors }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5; zevDone = true; // no zone event mid-test
+    const keep = { units, fxs, drops, feed, time, MODE, zevDone, meteors, over }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5; zevDone = true; over = false; // no zone event, and not frozen by a finished round
     const gm = mkUnit(ROSTER.find(d => d.n === 'Gabumon'), CX, CY), front = mkUnit(ROSTER.find(d => d.n === 'Agumon'), CX + 45, CY), back = mkUnit(ROSTER.find(d => d.n === 'Palmon'), CX - 70, CY);
     front.hp = 1; back.hp = back.hpMax = 99999; gm.ult = 100; gm.face = 1; units = [gm, front, back];
     let faced = true, threw = null, crate = false;
@@ -1035,7 +1041,7 @@ if (new URLSearchParams(location.search).has('test')) {
     } catch (err) { threw = err.message; }
     ok('Gabumon keeps facing his cone after it KOs the target', faced && front.dead);
     ok('digivolving mid-cone ends the attack without freezing the game', crate && !threw && gm.d.n !== 'Gabumon' && customPose(gm) === -1);
-    ({ units, fxs, drops, feed, time, MODE, zevDone, meteors } = keep); over = false;
+    ({ units, fxs, drops, feed, time, MODE, zevDone, meteors, over } = keep);
   });
 }
 </script>
