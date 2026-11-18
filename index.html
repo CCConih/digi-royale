@@ -204,7 +204,9 @@ let shake = 0;
 // seq: [pose, until s] after the ult fires, and the ult state lasts until the last one ends.
 // fx (optional): the attack effect, a row of vfx/special-fx.png drawn `len` px long from the mouth toward the target.
 // It reuses seq (pose frame n shows fx frame n, so they can't drift apart) and fades during the last one; it replaces
-// the archetype's generic visuals (hits are unchanged). Free rows: 0 Scissors Execution (Crabmon), 2 Lullaby Bubble (Otamamon).
+// the archetype's generic visuals (hits are unchanged). It stays at the mouth, so it suits breath, cone and melee ultimates
+// (Gabumon cone; row 0 Scissors Execution for Crabmon, melee). Projectile and chain ultimates keep their flying shot / zaps,
+// which carry the damage: row 2 Lullaby Bubble (Otamamon, projectile) needs a travelling effect, not supported yet.
 const ANIM = {
   Omnimon: { img: 'vfx/omnimon-poses.png', w: 133, h: 142, ax: 66.5, feet: 133, body: 115, charge: [0, 1],      // tools/mkomniposes.py
     seq: AD_TIMELINE.map(([f, , t1]) => [f, t1]) },
@@ -544,7 +546,7 @@ function survive(u, t, d, zr) {
 const GOAL_ICON = { heal: ['+', '#5be36b'], flee: ['!', '#ff6a6a'], exp: ['★', '#c77dff'], dodge: ['!', '#ff9a3a'] };
 
 function update(dt) {
-  if (over) { endT += dt; return; } // winner decided: the whole world freezes (zone, drops, events, animations)
+  if (over) return; // winner decided: the whole world freezes (zone, drops, events, animations); frame() counts endT
   time += dt; shake = Math.max(0, shake - dt);
   const zr = zoneR(time), alive = units.filter(u => !u.dead);
   updateDrops(dt, zr, alive); updateEvent(dt, zr, alive);
@@ -972,6 +974,7 @@ function frame(now) {
   const slow = duelT > 0 ? DUEL.slow : 1; duelT = Math.max(0, duelT - dt); // final-duel slow motion runs on real time
   if (bannerMsg && (bannerMsg.t -= dt) <= 0) bannerMsg = null;
   for (let i = 0; i < speed; i++) update(dt * slow);
+  if (over) endT += dt; // winner card timing runs on real time, not game speed (at 4× a stray tap skipped the card)
   if (!over) worldT = now / 1000; // frozen at the final blow
   draw(worldT, now / 1000);
   requestAnimationFrame(frame);
@@ -1015,7 +1018,7 @@ if (new URLSearchParams(location.search).has('test')) {
     ({ units, duelT, duelDone, over } = keep); }
   { const keep = { units, over, endT, time }, a = mkUnit(DEX[1], 60, CY), b = mkUnit(DEX[1], 75, CY); units = [a, b];
     over = true; endT = 0; const t0 = time, x0 = a.x, st0 = a.st; update(1);
-    ok('after the winner is decided nothing moves: time, units and animations stay frozen', time === t0 && a.x === x0 && a.st === st0 && endT === 1);
+    ok('after the winner is decided nothing moves: time, units and animations stay frozen', time === t0 && a.x === x0 && a.st === st0 && endT === 0);
     ({ units, over, endT, time } = keep); }
   { const keep = { units, zev, zevDone, meteors, drops, time, startN, shake, fxs: [...fxs] }, a = mkUnit(DEX[1], 100, CY), b = mkUnit(DEX[1], 220, CY);
     units = [a, b]; time = 0; startN = 2; zevDone = false; zev = null; meteors = [{ x: 100, y: CY, t: ZEV.meteor.warn }];
