@@ -24,7 +24,8 @@ const N = 35;
 // favours area ultimates far more than the mixed game, so it gets its own sim-tuned numbers.
 const MODES = { mixed: { label: 'MIXED', pool: d => d.st >= 2 && d.st <= 5, n: N },
   // retuned after the ult self-refill fix over 2×450 rookie rounds: every archetype 0.7–1.5× its fair share of wins
-  rookie: { label: 'ROOKIES', pool: d => d.st === 2, n: Infinity, rangedCd: 0.9, evolve: true,
+  // 40 random Rookies at 2× HP: sims had 60% of a full 60-Rookie field dead in 10 s; this gives ~19% and ~54 s rounds
+  rookie: { label: 'ROOKIES', pool: d => d.st === 2, n: 40, hpMul: 2, rangedCd: 0.75, evolve: true, // 0.75: ranged win share = field share (38%)
     kindDmg: { projectile: 1.51, melee: 1.5, beam: 1.69, dash: 1.97, cone: 1.35, chain: 1.03, nova: 0.81, aura: 0.9, orbit: 0.84, meteor: 1.02, boomerang: 2.12 } } }; // beam/meteor/boomerang have 1 Rookie each: their rates are one Digimon's luck
 let MODE = 'mixed';
 // shot damage × attacker dmg, cooldown multiplier, reach in px.
@@ -89,13 +90,15 @@ function newGame() {
   });
   units.forEach(u => { sheet(u.d.s); if (MODES[MODE].evolve) preloadEvo(u.d); });
   shots = []; fxs = []; feed = []; drops = []; nextDrop = 3; time = 0; over = false; endT = 0; shake = 0;
+  fav = null; bannerMsg = null; duelT = 0; duelDone = units.length <= 2; // a 2-Digimon round has no "final" moment
 }
 function mkUnit(d, x, y) {
   const base = d.f.map || d.f.battle;
   const sc = STAGE_HEIGHT[Math.min(d.st, 5)] / base[3]; // on-screen height set by stage, not by sprite size
   const ranged = d.a === 'Data' || ((d.a === 'Free' || d.a === 'Unknown') && Math.random() < 0.5);
+  const hp = (80 + 15 * d.st) * (MODES[MODE].hpMul || 1);
   return { d, x, y, vx: 0, vy: 0,
-    hpMax: 80 + 15 * d.st, hp: 80 + 15 * d.st, dmg: 8 + 2 * d.st, ranged, range: ranged ? RANGED.range : 0,
+    hpMax: hp, hp, dmg: 8 + 2 * d.st, ranged, range: ranged ? RANGED.range : 0,
     spd: rnd(28, 38) * (d.fly ? 1.15 : 1) * (ranged ? 1.05 : 1), sc, r: base[2] * sc * 0.4, face: x > CX ? -1 : 1,
     state: 'idle', st: 0, phase: Math.random(), cd: rnd(0.5, 1.5), hitDone: false, flash: 0,
     target: null, retarget: 0, kills: 0, lvl: 1, dead: false, gone: false, ult: rnd(0, 40), ultAt: null };
@@ -177,13 +180,20 @@ function damage(u, amt, from, ranged = false) { // only melee knocks back and st
   if (u.hp <= 0) {
     u.hp = 0; u.dead = true; setState(u, 'faint');
     feed.unshift({ txt: from ? `${from.d.n} KO'd ${u.d.n}` : `${u.d.n} fell to the zone`, t: 4 });
-    if (from && !from.dead) { from.kills++; gainExp(from, LEVEL_EXP); } // a KO is worth one full level
+    // a KO is worth one level, plus a bounty for each level the victim had over the killer (comebacks vs snowballing)
+    if (from && !from.dead) { from.kills++; gainExp(from, LEVEL_EXP + BOUNTY * Math.max(0, u.lvl - from.lvl)); }
+    if (u === fav) banner(`${u.d.n} fell!`, '#ff6a6a');
     feed.length = Math.min(feed.length, 5);
   } else if (from && !ranged && !['attack', 'shoot', 'charge', 'ult'].includes(u.state)) setState(u, 'hurt');
 }
 
 // EXP: every LEVEL_EXP levels up (max HP ×1.15, heal 40%, damage ×1.1, size ×1.05). KOs and EXP crates give it.
-const LEVEL_EXP = 100;
+const LEVEL_EXP = 100, BOUNTY = 50; // bounty: extra EXP per level the victim had over its killer (sims: 100–150 only made more Megas)
+
+// Spectator layer: the player's favourite (tap a Digimon), big centre banners for its moments, and the final-duel slow-mo.
+let fav = null, bannerMsg = null, duelT = 0, duelDone = false, duelNames = '';
+const DUEL = { secs: 2.5, slow: 0.35 }; // real seconds of slow motion when 2 are left, and the time scale during it
+const banner = (txt, c = '#ffd23a', t = 2) => { bannerMsg = { txt, c, t }; };
 function gainExp(u, amt) {
   u.exp = (u.exp || 0) + amt;
   while (u.exp >= LEVEL_EXP && !u.dead) {
@@ -205,6 +215,7 @@ function evolve(u) {
   u.hpMax = Math.round(u.hpMax * k); u.hp *= k; u.dmg *= stageDmg(d.st) / stageDmg(u.d.st);
   u.sc = STAGE_HEIGHT[Math.min(d.st, 5)] / base[3] * 1.05 ** (u.lvl - 1); u.r = base[2] * u.sc * 0.4;
   feed.unshift({ txt: `${u.d.n} digivolved to ${d.n}!`, t: 4 });
+  if (u === fav) banner(`${u.d.n} digivolved to ${d.n}!`);
   fxs.push({ kind: 'name', u, txt: 'DIGIVOLVE!', c: '#ffd23a', t: 0, life: 1.4 });
   u.d = d; u.flash = 0.3; preloadEvo(d);
   if (u.state === 'charge' || u.state === 'ult') { setState(u, 'idle'); u.ultAt = null; } // the old form's attack ends; the new form never plays poses for it
@@ -475,7 +486,9 @@ function update(dt) {
   fxs = fxs.filter(f => f.t < f.life);
   units = units.filter(u => !u.gone);
   feed.forEach(f => f.t -= dt); feed = feed.filter(f => f.t > 0);
-  if (!over && units.filter(u => !u.dead).length <= 1) { over = true; endT = 0; }
+  const left = units.filter(u => !u.dead);
+  if (!duelDone && left.length === 2) { duelDone = true; duelT = DUEL.secs; duelNames = `${left[0].d.n} vs ${left[1].d.n}`; }
+  if (!over && left.length <= 1) { over = true; endT = 0; duelT = 0; }
   if (over) endT += dt;
 }
 
@@ -726,12 +739,19 @@ function draw(t) {
     }
     ctx.globalAlpha = 1;
   }
+  if (fav && !fav.dead) { // favourite: pulsing ring at the feet and a bobbing arrow over the head
+    const q = 0.5 + 0.5 * Math.sin(t * 6), head = fav.y - (fav.d.f.map || fav.d.f.battle)[3] * fav.sc - 8 - 2 * q;
+    ctx.globalAlpha = 0.6 + 0.4 * q; ctx.strokeStyle = ctx.fillStyle = '#8ff0ff'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(fav.x, fav.y, fav.r * 1.9, fav.r * 0.7, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(fav.x - 5, head - 6); ctx.lineTo(fav.x + 5, head - 6); ctx.lineTo(fav.x, head); ctx.fill(); ctx.globalAlpha = 1;
+  }
 
   ctx.restore();
   // HUD
   ctx.fillStyle = '#0b0f14'; ctx.fillRect(0, 0, W, TOP); ctx.fillRect(0, BOT, W, H - BOT);
   const alive = units.filter(u => !u.dead).length;
   text(`${alive} ALIVE`, 12, 34, 20, '#fff', 'left');
+  if (fav) text(fav.dead ? `★ ${fav.d.n} fell · tap another` : `★ ${fav.d.n} Lv${fav.lvl} · ${fav.kills} KO`, 12, 50, 10, '#8ff0ff', 'left');
   text(`${Math.floor(time / 60)}:${String(Math.floor(time % 60)).padStart(2, '0')}`, CX, 34, 16, '#9fb3c8');
   ctx.fillStyle = '#1d2733'; ctx.fillRect(speedBtn.x, speedBtn.y, speedBtn.w, speedBtn.h);
   text(`${speed}×`, speedBtn.x + speedBtn.w / 2, speedBtn.y + 21, 14, '#fff');
@@ -745,6 +765,11 @@ function draw(t) {
   text('+ OMNIMON', omniBtn.x + omniBtn.w / 2, omniBtn.y + 14, 11, '#ffd23a');
 
   if (time < 1.5) text('FIGHT!', CX, CY, 44 + time * 10, '#ffe23a');
+  if (!fav && !over && time < 6) { ctx.globalAlpha = Math.min(1, 6 - time); text('Tap a Digimon to cheer for it', CX, CY + 44, 12, '#fff'); ctx.globalAlpha = 1; }
+  if (duelT > 0 && !over) { // final duel: title over the arena while time runs slow
+    ctx.globalAlpha = Math.min(1, duelT * 2); text('FINAL BATTLE', CX, TOP + 72, 26, '#ff6a6a'); text(duelNames, CX, TOP + 92, 12, '#fff'); ctx.globalAlpha = 1;
+  }
+  if (bannerMsg && !over) { ctx.globalAlpha = Math.min(1, bannerMsg.t * 2); text(bannerMsg.txt, CX, TOP + 122, 15, bannerMsg.c); ctx.globalAlpha = 1; }
   if (over && endT > 0.6) {
     const w = units.find(u => !u.dead);
     ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, 0, W, H);
@@ -759,6 +784,7 @@ function draw(t) {
       ctx.drawImage(img, fr[0], fr[1], fr[2], fr[3], -fr[4], -fr[5], fr[2], fr[3]); ctx.restore();
       text(w.d.n, CX, CY + 100, 22, '#fff');
       text(`${w.kills} KOs · Lv${w.lvl}`, CX, CY + 122, 13, '#9fb3c8');
+      if (w === fav) text('YOUR PICK WINS!', CX, CY - 98, 16, '#8ff0ff');
     }
     if (endT > 1.5) text('Tap to play again', CX, BOT - 20, 14, '#fff');
   }
@@ -769,14 +795,21 @@ cv.addEventListener('pointerdown', e => {
   if (inBtn(omniBtn, x, y)) { spawnOmnimon(); return; }
   if (x >= speedBtn.x && y <= speedBtn.y + speedBtn.h) { speed = speed === 4 ? 1 : speed * 2; return; }
   if (x >= modeBtn.x && x <= modeBtn.x + modeBtn.w && y <= modeBtn.y + modeBtn.h) { MODE = MODE === 'mixed' ? 'rookie' : 'mixed'; newGame(); return; }
-  if (over && endT > 1.5) newGame();
+  if (over && endT > 1.5) { newGame(); return; }
+  if (!over && y > TOP && y < BOT) { // tap a Digimon to cheer for it
+    let best = null, bd = 28;
+    for (const u of units) if (!u.dead) { const d = Math.hypot(u.x - x, u.y - 12 - y); if (d < bd) { bd = d; best = u; } }
+    if (best) { fav = best; banner(`Cheering for ${best.d.n}!`, '#8ff0ff', 1.4); }
+  }
 });
 
 newGame();
 let last = performance.now();
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  for (let i = 0; i < speed; i++) update(dt);
+  const slow = duelT > 0 ? DUEL.slow : 1; duelT = Math.max(0, duelT - dt); // final-duel slow motion runs on real time
+  if (bannerMsg && (bannerMsg.t -= dt) <= 0) bannerMsg = null;
+  for (let i = 0; i < speed; i++) update(dt * slow);
   draw(now / 1000);
   requestAnimationFrame(frame);
 }
@@ -806,6 +839,12 @@ if (new URLSearchParams(location.search).has('test')) {
   const gb = mk(0, 0); gb.d = ROSTER.find(d => d.n === 'Gabumon'); const at = (s, st) => { gb.state = s; gb.st = st; return customPose(gb); };
   ok('Gabumon poses: charge F1→F3, Petit Fire F4→F8, then its sprite', at('charge', 0) === 0 && at('charge', DUR.charge * 0.99) === 2
     && at('ult', 0) === 3 && at('ult', 0.84) === 7 && at('idle', 0) === -1); feed.shift(); // drop the test unit's popup and feed line
+  { const mega = DEX[ROSTER.find(d => d.st === 5).id], k = mk(0, 0), v = mk(5, 0); k.d = v.d = mega; v.lvl = 4; v.hp = 1; damage(v, 5, k); feed.shift();
+    ok('KO bounty: beating a foe 3 levels up = 100 + 3×50 EXP', k.lvl === 3 && k.exp === 50); }
+  { const keep = { units, duelT, duelDone }, a = mkUnit(DEX[1], 60, CY), b = mkUnit(DEX[1], 260, CY), c = mkUnit(DEX[1], 160, CY - 200);
+    units = [a, b, c]; duelDone = false; c.dead = true; update(0.001);
+    ok('final duel: 2 left starts the slow-mo title once', duelT === DUEL.secs && duelDone && duelNames.includes(' vs '));
+    ({ units, duelT, duelDone } = keep); }
   vfxReady.then(() => { // live scene (needs techs.json for Gabumon's cone): his cone KOs the Agumon in front; then an EXP crate digivolves him mid-cone
     const keep = { units, fxs, drops, feed, time, MODE }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5;
     const gm = mkUnit(ROSTER.find(d => d.n === 'Gabumon'), CX, CY), front = mkUnit(ROSTER.find(d => d.n === 'Agumon'), CX + 45, CY), back = mkUnit(ROSTER.find(d => d.n === 'Palmon'), CX - 70, CY);

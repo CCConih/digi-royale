@@ -2,7 +2,9 @@
 
 Snapshot of the prototype built 2026-11-16/17 in `Downloads\digisurvivor-handoff\game`. Starting point for a rebuild as its own project.
 
-A single-screen, portrait auto battle royale: 35 random Digimon (Rookie–Mega) fight automatically inside a shrinking zone until one is left. A HUD button switches to ROOKIES mode (every Rookie at once). The "+ OMNIMON" button in the bottom bar spawns Omnimon mid-round, or starts a new round with it if the last one ended.
+A single-screen, portrait auto battle royale: 35 random Digimon (Rookie–Mega) fight automatically inside a shrinking zone until one is left. A HUD button switches to ROOKIES mode: 40 random Rookies out of the 60 each round, at 2× HP (`hpMul`), with ranged cooldown 0.75. The sims behind those numbers: 60 Rookies at 1× HP lost 60% of the field in 10 s and rounds lasted 36 s; this setup loses about 19% and rounds last about 53 s, and ranged Rookies' share of wins matches their share of the field (38%).
+
+Spectating: tap a Digimon to cheer for it (`fav`). It gets a cyan ring and an arrow, its name, level and KOs show in the header, and banners announce its evolutions and its fall; if it wins, the winner card says "YOUR PICK WINS!". When 2 are left, "FINAL BATTLE · A vs B" shows and time runs at 0.35× for 2.5 real seconds (`DUEL`, applied in `frame()`, so sims that call `update()` directly are unaffected). The "+ OMNIMON" button in the bottom bar spawns Omnimon mid-round, or starts a new round with it if the last one ended.
 
 Omnimon is special (`OMNIMON`, `isOmni`). It has an additive gold/cyan aura, a ring at its feet, rising data sparkles, and its own ultimate, "All Delete" (`allDelete`). While charging and through the ult Omnimon is drawn with the 8 poses from the user's pose guide (`vfx/omnimon-poses.png`, built by `python -I tools/mkomniposes.py tools/src/alldelete-poses.jpg vfx/omnimon-poses.png`), and he holds the ult state until the sequence ends. F3 slashes from Omnimon to the target, dealing 0.6× damage along the line, and F4–F8 play on the target. At F5 a 75 px blast deals 1.4× damage and shakes the screen. Frames: `vfx/alldelete.png`, built by `python -I tools/mkalldelete.py tools/src/alldelete-fx.jpg vfx/alldelete.png` from the user's FX sheet; timing follows the user's pose guide.
 
@@ -13,7 +15,7 @@ Custom attack animations (`ANIM` in index.html) work per Digimon. Each entry is 
 - Gabumon "Petit Fire" (cone): poses F1–F3 while charging and F4–F8 after firing (`vfx/gabumon-poses.png`). The effect frames F4–F8 of row 1 of `vfx/special-fx.png` grow out of his `mouth` toward the target, about 70 px long; the cone still hits out to 150 px. Built by `python -I tools/mkguide.py gabumon-poses tools/src/gabumon-poses.jpg vfx/gabumon-poses.png` and `python -I tools/mkguide.py special-fx tools/src/special-fx.jpg vfx/special-fx.png`. Rows 0 and 2 of special-fx.png (Scissors Execution = Crabmon, Lullaby Bubble = Otamamon) are cut but not used yet.
 
 ## Run
-`python -m http.server 8765` in this folder, then open http://localhost:8765/ (it must be served; `file://` won't load the sheets). `?test` runs 14 self-checks (combat, EXP, evolution, Omnimon, Gabumon poses and a live Gabumon scene) and logs PASS/FAIL to the console.
+`python -m http.server 8765` in this folder, then open http://localhost:8765/ (it must be served; `file://` won't load the sheets). `?test` runs 16 self-checks (combat, EXP, bounty, evolution, Omnimon, Gabumon poses, final duel and a live Gabumon scene) and logs PASS/FAIL to the console.
 
 ## Files
 - `index.html`: the whole game (one canvas, about 600 lines, no dependencies).
