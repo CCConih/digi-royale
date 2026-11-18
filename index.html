@@ -33,6 +33,8 @@ let MODE = 'mixed';
 // Very sensitive: retune whenever N, VIEW, the zone or ULT change.
 let RANGED = { dmg: 0.5, cd: 0.8, range: 110 };
 const STAGE_HEIGHT ={ 2: 26, 3: 36, 4: 46, 5: 58 }; // px tall: Rookie < Champion < Ultimate < Mega+
+const SIZE_MUL = { Apocalymon: 1.6 }; // per-Digimon size on top of its stage (body radius scales with it)
+const bodyH = d => STAGE_HEIGHT[Math.min(d.st, 5)] * (SIZE_MUL[d.n] || 1);
 // shortcut: one-shot durations guessed; the real ones are in G.Sprites `r` map of app.min.js, swap in once recovered.
 const DUR = { attack: 0.35, shoot: 0.25, hurt: 0.3, faint: 0.8, dissolve: 0.5, charge: 0.55, ult: 0.4 };
 // Ultimate = each Digimon's signature technique (name from the site's G.DEX tech). Its shape follows the tech's archetype (see fireUlt).
@@ -167,7 +169,7 @@ function newGame() {
 }
 function mkUnit(d, x, y) {
   const base = d.f.map || d.f.battle;
-  const sc = STAGE_HEIGHT[Math.min(d.st, 5)] / base[3]; // on-screen height set by stage, not by sprite size
+  const sc = bodyH(d) / base[3]; // on-screen height set by stage, not by sprite size
   const ranged = d.a === 'Data' || ((d.a === 'Free' || d.a === 'Unknown') && Math.random() < 0.5);
   const hp = (80 + 15 * d.st) * (MODES[MODE].hpMul || 1);
   return { d, x, y, vx: 0, vy: 0,
@@ -286,7 +288,7 @@ const preloadEvo = d => (EVO[d.id] || []).forEach(i => sheet(DEX[i].s));
 function evolve(u) {
   const d = DEX[pick(EVO[u.d.id])], base = d.f.map || d.f.battle, k = stageHp(d.st) / stageHp(u.d.st);
   u.hpMax = Math.round(u.hpMax * k); u.hp *= k; u.dmg *= stageDmg(d.st) / stageDmg(u.d.st);
-  u.sc = STAGE_HEIGHT[Math.min(d.st, 5)] / base[3] * 1.05 ** (u.lvl - 1); u.r = base[2] * u.sc * 0.4;
+  u.sc = bodyH(d) / base[3] * 1.05 ** (u.lvl - 1); u.r = base[2] * u.sc * 0.4;
   feed.unshift({ txt: `${u.d.n} digivolved to ${d.n}!`, t: 4 });
   if (u === fav) banner(`${u.d.n} digivolved to ${d.n}!`);
   fxs.push({ kind: 'name', u, txt: 'DIGIVOLVE!', c: '#ffd23a', t: 0, life: 1.4 });
