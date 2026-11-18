@@ -55,14 +55,79 @@ function resize() {
 }
 addEventListener('resize', resize); resize();
 
-// procedural ground, rendered once
+// procedural ground, painted once at half resolution (2 px pixels) from a fixed seed, so every load looks the same.
+// A Digimon World 1–style meadow: lush grass patches, a winding dirt path, flowers, tufts and pebbles inside the zone;
+// puffy trees, pines, boulders and a pond around it. Purely decoration: nothing collides with it.
 const ground = document.createElement('canvas'); ground.width = W; ground.height = BOT - TOP;
-{ const g = ground.getContext('2d');
-  for (let y = 0; y < ground.height; y += 8) for (let x = 0; x < W; x += 8) {
-    const n = (Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1;
-    g.fillStyle = ((x + y) / 8) % 2 ? '#3f7d3a' : '#43843e'; g.fillRect(x, y, 8, 8);
-    if (Math.abs(n) > 0.82) { g.fillStyle = '#5aa04f'; g.fillRect(x + 3, y + 2, 1, 3); g.fillRect(x + 5, y + 3, 1, 2); }
-  } }
+{ const gw = W / 2 | 0, gh = (BOT - TOP) / 2 | 0, lo = Object.assign(document.createElement('canvas'), { width: gw, height: gh }), g = lo.getContext('2d');
+  let seed = 7; const r = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296, rr = (a, b) => a + r() * (b - a);
+  const mix = (a, b, t) => a + (b - a) * t;
+  const px = (c, x, y, w = 1, h = 1) => { g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), w, h); };
+  const ell = (c, x, y, rx, ry) => { for (let dy = -ry; dy <= ry; dy++) { const hw = Math.round(rx * Math.sqrt(1 - (dy / ry) ** 2)); px(c, x - hw, y + dy, hw * 2 + 1, 1); } };
+  const cx = gw / 2, cy = (CY - TOP) / 2, R = ZONE_R0 / 2;
+  // grass: smooth value noise picks one of 4 greens, with a little dither so the patches have ragged edges
+  const N = 14, cols = Math.ceil(gw / N) + 2, grid = Array.from({ length: cols * (Math.ceil(gh / N) + 2) }, r), sm = t => t * t * (3 - 2 * t);
+  const noise = (x, y) => { const i = x / N | 0, j = y / N | 0, fx = sm(x / N - i), fy = sm(y / N - j), k = j * cols + i;
+    return mix(mix(grid[k], grid[k + 1], fx), mix(grid[k + cols], grid[k + cols + 1], fx), fy); };
+  const GREENS = ['#3e8b36', '#489a3d', '#53a944', '#61b84f'];
+  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) px(GREENS[Math.max(0, Math.min(3, (noise(x, y) + (r() - 0.5) * 0.14) * 4 | 0))], x, y);
+  // dirt path winding top to bottom through the arena
+  const pathX = y => cx + Math.sin(y / 45 + 1) * 26 + Math.sin(y / 17) * 4, pathW = y => 8 + Math.sin(y / 23) * 2;
+  const onPath = (x, y, pad = 0) => Math.abs(x - pathX(y)) < pathW(y) + pad;
+  for (let y = 0; y < gh; y++) { const x = pathX(y), w = pathW(y); px('#8c6a3c', x - w - 1, y, w * 2 + 3); px('#c9a46a', x - w, y, w * 2 + 1); }
+  for (let i = 0; i < 260; i++) { const y = rr(0, gh), x = pathX(y) + rr(-1, 1) * (pathW(y) - 1); px(r() < 0.5 ? '#dcbb84' : '#b08850', x, y, r() < 0.3 ? 2 : 1); }
+  for (let i = 0; i < 26; i++) { const y = rr(0, gh), x = pathX(y) + rr(-0.7, 0.7) * pathW(y); px('#6d6a66', x, y + 1, 2); px('#a9a6a0', x, y, 2); } // pebbles
+  const inZone = (x, y, pad = 0) => Math.hypot(x - cx, y - cy) < R - pad;
+  // grass tufts and flowers
+  for (let i = 0; i < 420; i++) { const x = rr(1, gw - 1), y = rr(2, gh); if (onPath(x, y, 2)) continue;
+    const c = r() < 0.55 ? '#2f7029' : '#7ccc5c'; px(c, x - 1, y - 1); px(c, x, y - 2); px(c, x + 1, y - 1); px(c, x, y - 1); }
+  const PETALS = ['#ffffff', '#ffe14a', '#ff8ad0', '#9ad8ff', '#ff6a5a'];
+  for (let i = 0; i < 46; i++) { const x0 = rr(4, gw - 4), y0 = rr(4, gh - 4); if (onPath(x0, y0, 5)) continue;
+    const pc = PETALS[r() * PETALS.length | 0];
+    for (let k = 0, n = 2 + (r() * 4 | 0); k < n; k++) { const x = x0 + rr(-6, 6), y = y0 + rr(-4, 4);
+      px('#2f7029', x, y + 2); px(pc, x - 1, y); px(pc, x + 1, y); px(pc, x, y - 1); px(pc, x, y + 1); px(pc === '#ffe14a' ? '#ff8a2a' : '#ffd23a', x, y); } }
+  // pond in the lower-left corner, outside the circle
+  const pond = { x: 26, y: gh - 30, rx: 20, ry: 11 };
+  ell('#d6bf86', pond.x, pond.y + 1, pond.rx + 3, pond.ry + 3); ell('#2b5f8c', pond.x, pond.y, pond.rx + 1, pond.ry + 1);
+  ell('#3f8bcb', pond.x, pond.y, pond.rx, pond.ry); ell('#56a3dd', pond.x - 3, pond.y - 2, pond.rx - 6, pond.ry - 5);
+  for (const [dx, dy, w] of [[-9, -4, 6], [4, 2, 5], [-2, 5, 4], [9, -3, 3]]) px('#bfe6ff', pond.x + dx, pond.y + dy, w);
+  for (const [dx, dy] of [[14, -6], [-15, 5]]) { ell('#2f8a3a', pond.x + dx, pond.y + dy, 3, 2); px('#ff8ad0', pond.x + dx, pond.y + dy - 1); } // lily pads
+  // rocks: a few small ones inside the zone, boulders outside
+  const rock = (x, y, s) => {
+    ell('rgba(0,0,0,0.25)', x + 1, y + Math.round(s * 0.5), s + 1, Math.max(1, Math.round(s * 0.35)));
+    ell('#3a3b45', x, y, s + 1, Math.round(s * 0.8) + 1); ell('#8e909c', x, y, s, Math.round(s * 0.8));
+    ell('#6e707c', x + 1, y + Math.round(s * 0.3), Math.max(1, s - 2), Math.max(1, Math.round(s * 0.4)));
+    ell('#c6c8d2', x - Math.round(s * 0.35), y - Math.round(s * 0.35), Math.max(1, Math.round(s * 0.35)), Math.max(1, Math.round(s * 0.25)));
+  };
+  const used = [];
+  const free = (x, y, d) => !onPath(x, y, d * 0.6) && Math.hypot(x - pond.x, y - pond.y) > pond.rx + d && used.every(o => Math.hypot(o.x - x, o.y - y) > o.d + d);
+  for (let i = 0, n = 0; i < 300 && n < 9; i++) { const x = rr(10, gw - 10), y = rr(10, gh - 10), s = 2 + (r() * 3 | 0);
+    if (inZone(x, y, 6) && free(x, y, s + 4)) { rock(x, y, s); used.push({ x, y, d: s + 4 }); n++; } }
+  // trees and boulders outside the starting circle, drawn back to front
+  const props = [];
+  for (let i = 0; i < 900 && props.length < 34; i++) { const x = rr(4, gw - 4), y = rr(6, gh + 4), s = rr(7, 13);
+    if (!inZone(x, y, -s * 1.2) && free(x, y, s)) { props.push({ x, y, s, kind: r() < 0.14 ? 'boulder' : r() < 0.3 ? 'pine' : 'tree' }); used.push({ x, y, d: s * 0.9 }); } }
+  props.sort((a, b) => a.y - b.y);
+  for (const { x, y, s, kind } of props) {
+    if (kind === 'boulder') { rock(x, y - s * 0.3, Math.round(s * 0.7)); continue; }
+    ell('rgba(0,0,0,0.28)', x + 2, y, Math.round(s * 0.9), Math.round(s * 0.32));
+    const th = Math.round(s * 0.7), tw = Math.max(2, Math.round(s * 0.3));
+    px('#3b2414', x - tw / 2 - 1, y - th, tw + 2, th); px('#7a4e2a', x - tw / 2, y - th, tw, th); px('#9a6a3c', x - tw / 2, y - th, 1, th);
+    if (kind === 'pine') { // three stacked tiers: dark outline, fill, lit left edge
+      for (let k = 0; k < 3; k++) { const ty = y - th - k * s * 0.55, hw = s * (1 - k * 0.25), hh = s * 0.75;
+        for (let dy = 0; dy <= hh; dy++) { const w = Math.round(hw * dy / hh);
+          px('#173d1c', x - w - 1, ty - hh + dy, w * 2 + 3); px(dy > hh * 0.5 ? '#2a6b30' : '#348a3a', x - w, ty - hh + dy, w * 2 + 1); px('#5cb85a', x - w, ty - hh + dy, Math.max(1, w * 0.5)); } }
+      continue;
+    }
+    const cyT = y - th - s * 0.7, puffs = [[0, -s * 0.35, s * 0.75], [-s * 0.55, 0, s * 0.62], [s * 0.55, 0, s * 0.62], [0, s * 0.15, s * 0.7]];
+    for (const [dx, dy, pr] of puffs) ell('#1d4a1e', x + dx, cyT + dy, Math.round(pr) + 1, Math.round(pr) + 1);
+    for (const [dx, dy, pr] of puffs) ell('#2f7d2f', x + dx, cyT + dy, Math.round(pr), Math.round(pr));
+    for (const [dx, dy, pr] of puffs) ell('#49a344', x + dx - pr * 0.25, cyT + dy - pr * 0.3, Math.round(pr * 0.55), Math.round(pr * 0.5));
+    for (let k = 0; k < 5; k++) px('#86d86a', x + rr(-s * 0.7, s * 0.3), cyT + rr(-s * 0.8, 0), 2, 1);
+    if (r() < 0.35) for (let k = 0; k < 3; k++) px('#e8403a', x + rr(-s * 0.6, s * 0.6), cyT + rr(-s * 0.3, s * 0.5), 2, 2); // red fruit
+  }
+  const G = ground.getContext('2d'); G.imageSmoothingEnabled = false; G.drawImage(lo, 0, 0, ground.width, ground.height);
+}
 
 const sheets = {};
 function sheet(path) { return sheets[path] || (sheets[path] = Object.assign(new Image(), { src: path })); }
@@ -672,7 +737,7 @@ function draw(t) {
   // storm outside the zone
   const zr = zoneR(time);
   ctx.save(); ctx.beginPath(); ctx.rect(0, TOP, W, BOT - TOP); ctx.arc(CX, CY, Math.max(0, zr), 0, Math.PI * 2, true);
-  ctx.fillStyle = 'rgba(120,40,200,0.38)'; ctx.fill(); ctx.restore();
+  ctx.fillStyle = 'rgba(110,40,200,0.26)'; ctx.fill(); ctx.restore(); // light enough to keep the scenery's colours
   if (zr > 0) { ctx.strokeStyle = '#d9b3ff'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.arc(CX, CY, zr, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
 
   for (const d of drops) if (d.t >= DROP.fall) drawCrate(d, t); else { // shadow grows as it falls
@@ -860,7 +925,7 @@ cv.addEventListener('pointerdown', e => {
 newGame();
 let last = performance.now();
 function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now; // the first rAF stamp can be older than `last`
   const slow = duelT > 0 ? DUEL.slow : 1; duelT = Math.max(0, duelT - dt); // final-duel slow motion runs on real time
   if (bannerMsg && (bannerMsg.t -= dt) <= 0) bannerMsg = null;
   for (let i = 0; i < speed; i++) update(dt * slow);
@@ -907,7 +972,7 @@ if (new URLSearchParams(location.search).has('test')) {
     ok('zone event starts once at ZEV.at', zevDone && zev && ZEV_INFO[zev.kind]);
     ({ units, zev, zevDone, meteors, drops, time, startN, shake, fxs } = keep); }
   vfxReady.then(() => { // live scene (needs techs.json for Gabumon's cone): his cone KOs the Agumon in front; then an EXP crate digivolves him mid-cone
-    const keep = { units, fxs, drops, feed, time, MODE }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5;
+    const keep = { units, fxs, drops, feed, time, MODE, zevDone, meteors }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5; zevDone = true; // no zone event mid-test
     const gm = mkUnit(ROSTER.find(d => d.n === 'Gabumon'), CX, CY), front = mkUnit(ROSTER.find(d => d.n === 'Agumon'), CX + 45, CY), back = mkUnit(ROSTER.find(d => d.n === 'Palmon'), CX - 70, CY);
     front.hp = 1; back.hp = back.hpMax = 99999; gm.ult = 100; gm.face = 1; units = [gm, front, back];
     let faced = true, threw = null, crate = false;
@@ -918,7 +983,7 @@ if (new URLSearchParams(location.search).has('test')) {
     } catch (err) { threw = err.message; }
     ok('Gabumon keeps facing his cone after it KOs the target', faced && front.dead);
     ok('digivolving mid-cone ends the attack without freezing the game', crate && !threw && gm.d.n !== 'Gabumon' && customPose(gm) === -1);
-    ({ units, fxs, drops, feed, time, MODE } = keep); over = false;
+    ({ units, fxs, drops, feed, time, MODE, zevDone, meteors } = keep); over = false;
   });
 }
 </script>

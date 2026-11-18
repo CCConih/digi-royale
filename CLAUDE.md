@@ -28,6 +28,7 @@ Custom attack animations (`ANIM` in index.html) work per Digimon. Each entry is 
 ## How the game works
 - Animation is procedural on static poses (idle bob, walk hop, attack lunge, shoot recoil, hurt knock-back, faint slump, charge, ult). Attack/shoot → `attack` pose, hurt/faint → `hit`, else `map`. `frameFor` shrinks big poses to map size, matching against `battle`, or `hit`/`attack` when a sheet has no battle pose.
 - Size is set by stage (`STAGE_HEIGHT`), not sprite size.
+- The arena (`ground`) is painted once in code at half resolution from a fixed seed, as original pixel art in a Digimon World 1–style meadow. Inside the zone: grass patches, a winding dirt path, flowers, tufts and small rocks. Outside it: puffy trees (some with red fruit), pines, boulders and a pond. It is decoration only: nothing collides with it. The storm outside the zone is a light purple tint (0.26) so the scenery keeps its colour.
 - Data/Free/Unknown attribute can be ranged: 50% damage, no knockback, 5% faster.
 - Zone shrinks nonstop over 70 s; damage rises from 1% to 10% max HP/s as it shrinks. Digimon walk back in.
 - Ultimate: meter fills over time and from damage dealt/taken; fires the Digimon's signature technique in its archetype (projectile, melee, beam, dash, cone, chain, nova, aura, orbit, meteor, boomerang). Ult hits never refill the caster's meter. Fire burns, ice/water slow, electric pierces.
