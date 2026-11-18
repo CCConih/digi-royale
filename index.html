@@ -26,7 +26,16 @@ const MODES = { mixed: { label: 'MIXED', pool: d => d.st >= 2 && d.st <= 5, n: N
   // retuned after the ult self-refill fix over 2×450 rookie rounds: every archetype 0.7–1.5× its fair share of wins
   // 40 random Rookies at 2× HP: sims had 60% of a full 60-Rookie field dead in 10 s; this gives ~19% and ~54 s rounds
   rookie: { label: 'ROOKIES', pool: d => d.st === 2, n: 40, hpMul: 2, rangedCd: 0.85, evolve: true, // 0.85 with survival AI: ranged win share ≈ field share (~40% vs 38%, 250 sims)
-    kindDmg: { projectile: 1.51, melee: 1.5, beam: 1.69, dash: 1.97, cone: 1.35, chain: 1.03, nova: 0.81, aura: 0.9, orbit: 0.84, meteor: 1.02, boomerang: 2.12 } } }; // beam/meteor/boomerang have 1 Rookie each: their rates are one Digimon's luck
+    kindDmg: { projectile: 1.51, melee: 1.5, beam: 1.69, dash: 1.97, cone: 1.35, chain: 1.03, nova: 0.81, aura: 0.9, orbit: 0.84, meteor: 1.02, boomerang: 2.12 } }, // beam/meteor/boomerang have 1 Rookie each: their rates are one Digimon's luck
+  // 150 Rookies, duplicates allowed. With Rookies settings it lost 64% in 10 s and a Mega won 30/30 rounds. So it spawns over
+  // the whole arena inside a circle that covers it (zoneR0), and KOs are worth 60 EXP + 25/level (koExp, bounty).
+  // 80 sim rounds: 36% dead at 10 s, 75% at 20 s, ~73 s rounds; winners 33% Mega, 55% Ultimate, 12% Champion;
+  // ranged win ~40% vs ~38% of the field at rangedCd 1.2 (the open arena lets them kite: 0.85 gave 88%).
+  swarm: { label: 'SWARM', pool: d => d.st === 2, n: 150, dupes: true, hpMul: 2, rangedCd: 1.2, evolve: true,
+    zoneR0: Math.hypot(W, BOT - TOP) / 2, zoneTime: 80, koExp: 60, bounty: 25 } };
+MODES.swarm.kindDmg = MODES.rookie.kindDmg;
+const MODE_ORDER = ['mixed', 'rookie', 'swarm'];
+const zoneR0 = () => MODES[MODE].zoneR0 || ZONE_R0, evoEvery = () => MODES[MODE].evolveEvery || EVOLVE_EVERY;
 let MODE = 'mixed';
 // shot damage × attacker dmg, cooldown multiplier, reach in px.
 // cd tuned by 300 sim rounds with ultimates (N 35, VIEW 1.25, start circle W/2): ranged win 34% vs 34% of the field.
@@ -152,14 +161,15 @@ const ZEV = { at: 25, field: 0.3, meteor: { secs: 4, every: 0.3, warn: 0.8, r: 3
 const ZEV_INFO = { meteor: { txt: 'METEOR SHOWER!', sub: 'Watch the red circles', c: '#ff7a3a' },
   storm: { txt: 'DATA STORM!', sub: 'Everyone is slowed', c: '#7ad7ff' }, rain: { txt: 'EXP RAIN!', sub: 'Grab the crates', c: '#c77dff' } };
 let zev = null, zevDone = false, meteors = [], startN = 0;
-const expDrop = zr => Math.round(lerp(DROP.expMax, DROP.expMin, Math.min(1, zr / ZONE_R0)));
+const expDrop = zr => Math.round(lerp(DROP.expMax, DROP.expMin, Math.min(1, zr / zoneR0())));
 
 function newGame() {
-  const pool = ROSTER.filter(MODES[MODE].pool), n = Math.min(MODES[MODE].n, pool.length);
+  const M = MODES[MODE], pool = ROSTER.filter(M.pool), n = M.dupes ? M.n : Math.min(M.n, pool.length);
   const chosen = [];
-  while (chosen.length < n) { const d = pick(pool); if (!chosen.includes(d)) chosen.push(d); }
-  units = chosen.map((d, i) => {
-    const a = i / n * Math.PI * 2, rr = rnd(0.45, 0.9) * ZONE_R0; // spawn inside the starting circle
+  while (chosen.length < n) { const d = pick(pool); if (M.dupes || !chosen.includes(d)) chosen.push(d); }
+  units = chosen.map((d, i) => { // a ring inside the starting circle; a big field spreads over the whole arena instead
+    if (M.dupes) return mkUnit(d, rnd(16, W - 16), rnd(TOP + 24, BOT - 8));
+    const a = i / n * Math.PI * 2, rr = rnd(0.45, 0.9) * ZONE_R0;
     return mkUnit(d, CX + Math.cos(a) * rr, CY + Math.sin(a) * rr);
   });
   units.forEach(u => { sheet(u.d.s); if (MODES[MODE].evolve) preloadEvo(u.d); });
@@ -241,8 +251,8 @@ function spawnOmnimon() {
   feed.unshift({ txt: 'Omnimon has entered the battle!', t: 4 }); feed.length = Math.min(feed.length, 5);
 }
 
-const zoneR = t => Math.max(0, ZONE_R0 * (1 - t / ZONE_TIME));
-const zoneDps = r => lerp(ZONE_DPS_MAX, ZONE_DPS_MIN, Math.min(1, r / ZONE_R0)); // smaller zone hurts more
+const zoneR = t => Math.max(0, zoneR0() * (1 - t / (MODES[MODE].zoneTime || ZONE_TIME)));
+const zoneDps = r => lerp(ZONE_DPS_MAX, ZONE_DPS_MIN, Math.min(1, r / zoneR0())); // smaller zone hurts more
 
 function setState(u, s) { u.state = s; u.st = 0; u.hitDone = false; if (s !== 'ult') u.dash = null; }
 
@@ -256,7 +266,7 @@ function damage(u, amt, from, ranged = false, cause = 'the zone') { // only mele
     u.hp = 0; u.dead = true; setState(u, 'faint');
     feed.unshift({ txt: from ? `${from.d.n} KO'd ${u.d.n}` : `${u.d.n} fell to ${cause}`, t: 4 });
     // a KO is worth one level, plus a bounty for each level the victim had over the killer (comebacks vs snowballing)
-    if (from && !from.dead) { from.kills++; gainExp(from, LEVEL_EXP + BOUNTY * Math.max(0, u.lvl - from.lvl)); }
+    if (from && !from.dead) { from.kills++; gainExp(from, (MODES[MODE].koExp || LEVEL_EXP) + (MODES[MODE].bounty ?? BOUNTY) * Math.max(0, u.lvl - from.lvl)); }
     if (u === fav) banner(`${u.d.n} fell!`, '#ff6a6a');
     feed.length = Math.min(feed.length, 5);
   } else if (from && !ranged && !['attack', 'shoot', 'charge', 'ult'].includes(u.state)) setState(u, 'hurt');
@@ -274,7 +284,7 @@ function gainExp(u, amt) {
   while (u.exp >= LEVEL_EXP && !u.dead) {
     u.exp -= LEVEL_EXP; u.lvl++; u.hpMax = Math.round(u.hpMax * 1.15);
     u.hp = Math.min(u.hpMax, u.hp + u.hpMax * 0.4); u.dmg *= 1.1; u.sc *= 1.05; u.r *= 1.05;
-    if (MODES[MODE].evolve && u.lvl % EVOLVE_EVERY === 0 && EVO[u.d.id]) evolve(u);
+    if (MODES[MODE].evolve && u.lvl % evoEvery() === 0 && EVO[u.d.id]) evolve(u);
   }
   feed.length = Math.min(feed.length, 5);
 }
@@ -523,7 +533,7 @@ function survive(u, t, d, zr) {
       return { x: u.x - (t.x - u.x) / d * 40 + (CX - u.x) / cd * 40 * pull, y: u.y - (t.y - u.y) / d * 40 + (CY - u.y) / cd * 40 * pull, why: 'flee' };
     }
   }
-  if (MODES[MODE].evolve && EVO[u.d.id] && (u.lvl + 1) % EVOLVE_EVERY === 0) { const c = go(crate(['exp'], SURV.expSeek), 'exp'); if (c) return c; }
+  if (MODES[MODE].evolve && EVO[u.d.id] && (u.lvl + 1) % evoEvery() === 0) { const c = go(crate(['exp'], SURV.expSeek), 'exp'); if (c) return c; }
   if (u.ult < ULT.full * 0.5) { const c = go(crate(['ult'], SURV.ultSeek), 'crate'); if (c) return c; }
   return go(crate(Object.keys(DROP_KIND), Math.min(DROP.grab, d)), 'crate');
 }
@@ -901,7 +911,7 @@ function draw(t) {
   ctx.fillStyle = '#1d2733'; ctx.fillRect(speedBtn.x, speedBtn.y, speedBtn.w, speedBtn.h);
   text(`${speed}×`, speedBtn.x + speedBtn.w / 2, speedBtn.y + 21, 14, '#fff');
   ctx.fillStyle = '#1d2733'; ctx.fillRect(modeBtn.x, modeBtn.y, modeBtn.w, modeBtn.h);
-  text(MODES[MODE].label, modeBtn.x + modeBtn.w / 2, modeBtn.y + 20, 12, MODE === 'rookie' ? '#ffd23a' : '#fff');
+  text(MODES[MODE].label, modeBtn.x + modeBtn.w / 2, modeBtn.y + 20, 12, { rookie: '#ffd23a', swarm: '#ff8a5a' }[MODE] || '#fff');
   feed.forEach((f, i) => { ctx.globalAlpha = Math.min(1, f.t); text(f.txt, 8, TOP + 16 + i * 13, 10, '#fff', 'left'); });
   ctx.globalAlpha = 1;
   text(`${zr <= 0 ? 'ZONE CLOSED' : 'ZONE SHRINKING'} · ${Math.round(zoneDps(zr) * 100)}% HP/s`, CX - 40, BOT + 16, 12, '#d9b3ff');
@@ -942,7 +952,7 @@ cv.addEventListener('pointerdown', e => {
   const r = cv.getBoundingClientRect(), x = (e.clientX - r.left) / scale, y = (e.clientY - r.top) / scale;
   if (inBtn(omniBtn, x, y)) { spawnOmnimon(); return; }
   if (x >= speedBtn.x && y <= speedBtn.y + speedBtn.h) { speed = speed === 4 ? 1 : speed * 2; return; }
-  if (x >= modeBtn.x && x <= modeBtn.x + modeBtn.w && y <= modeBtn.y + modeBtn.h) { MODE = MODE === 'mixed' ? 'rookie' : 'mixed'; newGame(); return; }
+  if (x >= modeBtn.x && x <= modeBtn.x + modeBtn.w && y <= modeBtn.y + modeBtn.h) { MODE = MODE_ORDER[(MODE_ORDER.indexOf(MODE) + 1) % MODE_ORDER.length]; newGame(); return; }
   if (over && endT > 1.5) { newGame(); return; }
   if (!over && y > TOP && y < BOT) { // tap a Digimon to cheer for it
     let best = null, bd = 28;
@@ -981,6 +991,10 @@ if (new URLSearchParams(location.search).has('test')) {
   const g = mk(0, 0); g.d = DEX[ROSTER.find(d => d.st === 5).id]; gainExp(g, 250); ok('250 EXP = 2 levels + 50 left over', g.lvl === 3 && g.exp === 50);
   ok('EXP crate grows as the zone shrinks (25 → 100)', expDrop(ZONE_R0) === 25 && expDrop(ZONE_R0 / 2) > 25 && expDrop(0) === 100);
   units = real; fxs = fxs.filter(f => f.u !== e);
+  { const keep = { units, MODE, fxs, drops, feed }; MODE = 'swarm'; newGame();
+    ok('SWARM: 150 Rookies with repeats, all inside its arena-wide starting circle', units.length === 150 && units.every(u => u.d.st === 2)
+      && new Set(units.map(u => u.d.id)).size < 150 && units.every(u => Math.hypot(u.x - CX, u.y - CY) < zoneR(0)) && zoneR(0) > ZONE_R0);
+    MODE = keep.MODE; ({ units, fxs, drops, feed } = keep); }
   const n0 = units.length; spawnOmnimon(); const om = units.at(-1);
   ok('spawn button adds an Omnimon using All Delete', units.length === n0 + 1 && isOmni(om) && ultKind(om) === 'alldelete' && om.d.u === 'All Delete');
   units.pop(); fxs.pop(); feed.shift();
