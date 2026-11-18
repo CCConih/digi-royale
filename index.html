@@ -407,7 +407,7 @@ function updateEvent(dt, zr, alive) {
   }
   for (const m of meteors) if ((m.t += dt) >= ZEV.meteor.warn && !m.hit) {
     m.hit = true; shake = Math.max(shake, 0.15);
-    fxs.push({ kind: 'blast', x: m.x, y: m.y, r: ZEV.meteor.r, c: '#ff7a3a', t: 0, life: 0.45 });
+    fxs.push(skillHit('fireball', m.x, m.y - 6, 48)); // skill-sheet fireball impact: explosion → embers, ~64 px
     for (const u of alive) { const dx = u.x - m.x, dy = u.y - m.y, d = Math.hypot(dx, dy);
       if (d < ZEV.meteor.r + u.r) { u.flash = 0.12; u.vx += dx / (d || 1) * 80; u.vy += dy / (d || 1) * 80; damage(u, u.hpMax * ZEV.meteor.dmg, null, false, 'a meteor'); } }
   }
@@ -685,9 +685,10 @@ function draw(t) {
     ctx.fillStyle = 'rgba(255,90,40,0.35)'; ctx.beginPath(); ctx.arc(m.x, m.y, ZEV.meteor.r * p, 0, Math.PI * 2); ctx.fill();
   }
   [...units].sort((a, b) => a.y - b.y).forEach(u => drawUnit(u, t));
-  for (const m of meteors) { const p = m.t / ZEV.meteor.warn, x = m.x + 90 * (1 - p), y = m.y - 260 * (1 - p); // rock streaks in from the upper right
-    ctx.strokeStyle = 'rgba(255,200,120,0.6)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 18, y - 52); ctx.stroke();
-    ctx.fillStyle = '#ffb14a'; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff3c0'; ctx.beginPath(); ctx.arc(x - 1, y - 1, 2, 0, Math.PI * 2); ctx.fill();
+  const fall = Math.atan2(260, -90); // meteors streak in from the upper right
+  for (const m of meteors) { const p = m.t / ZEV.meteor.warn, x = m.x + 90 * (1 - p), y = m.y - 260 * (1 - p);
+    for (let k = 1; k <= 3; k++) drawSkill('fireball', 6, x + 90 * k * 0.09, y - 260 * k * 0.09, fall, 0.35, 0.5 - k * 0.13); // ember-frame trail
+    drawSkill('fireball', flyFrame('fireball', m.t), x, y, fall, 0.5);
   }
   if (stormSlow()) { // data storm: blue tint and fast diagonal streaks over the arena
     const a = Math.min(1, zev.t * 3, (ZEV.storm.secs - zev.t) * 3);
@@ -898,13 +899,13 @@ if (new URLSearchParams(location.search).has('test')) {
     units = [a, b, c]; duelDone = false; c.dead = true; update(0.001);
     ok('final duel: 2 left starts the slow-mo title once', duelT === DUEL.secs && duelDone && duelNames.includes(' vs '));
     ({ units, duelT, duelDone } = keep); }
-  { const keep = { units, zev, zevDone, meteors, drops, time, startN, shake }, a = mkUnit(DEX[1], 100, CY), b = mkUnit(DEX[1], 220, CY);
+  { const keep = { units, zev, zevDone, meteors, drops, time, startN, shake, fxs: [...fxs] }, a = mkUnit(DEX[1], 100, CY), b = mkUnit(DEX[1], 220, CY);
     units = [a, b]; time = 0; startN = 2; zevDone = false; zev = null; meteors = [{ x: 100, y: CY, t: ZEV.meteor.warn }];
     updateEvent(0.001, ZONE_R0, units); feed.length = 0;
-    ok('meteor hits only inside its circle, for 15% max HP', Math.abs(a.hp - a.hpMax * 0.85) < 1e-6 && b.hp === b.hpMax && !meteors.length && !zev);
+    ok('meteor hits only inside its circle, for 15% max HP, with a fireball impact', Math.abs(a.hp - a.hpMax * 0.85) < 1e-6 && b.hp === b.hpMax && !meteors.length && !zev && fxs.some(f => f.s === 'fireball'));
     time = ZEV.at; updateEvent(0.001, ZONE_R0, units);
     ok('zone event starts once at ZEV.at', zevDone && zev && ZEV_INFO[zev.kind]);
-    ({ units, zev, zevDone, meteors, drops, time, startN, shake } = keep); fxs = fxs.filter(f => f.c !== '#ff7a3a'); }
+    ({ units, zev, zevDone, meteors, drops, time, startN, shake, fxs } = keep); }
   vfxReady.then(() => { // live scene (needs techs.json for Gabumon's cone): his cone KOs the Agumon in front; then an EXP crate digivolves him mid-cone
     const keep = { units, fxs, drops, feed, time, MODE }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5;
     const gm = mkUnit(ROSTER.find(d => d.n === 'Gabumon'), CX, CY), front = mkUnit(ROSTER.find(d => d.n === 'Agumon'), CX + 45, CY), back = mkUnit(ROSTER.find(d => d.n === 'Palmon'), CX - 70, CY);
