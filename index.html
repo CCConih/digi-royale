@@ -202,11 +202,14 @@ let shake = 0;
 // during the ult. Strip frames are w×h and face right; (ax, feet) = foot anchor, body = body height in frame px,
 // mouth = where breath effects start (frame px from the anchor). charge: pose frames spread over the charge;
 // seq: [pose, until s] after the ult fires, and the ult state lasts until the last one ends.
+// fx (optional): the attack effect, a row of vfx/special-fx.png drawn `len` px long from the mouth toward the target.
+// It reuses seq (pose frame n shows fx frame n, so they can't drift apart) and fades during the last one; it replaces
+// the archetype's generic visuals (hits are unchanged). Free rows: 0 Scissors Execution (Crabmon), 2 Lullaby Bubble (Otamamon).
 const ANIM = {
   Omnimon: { img: 'vfx/omnimon-poses.png', w: 133, h: 142, ax: 66.5, feet: 133, body: 115, charge: [0, 1],      // tools/mkomniposes.py
     seq: AD_TIMELINE.map(([f, , t1]) => [f, t1]) },
   Gabumon: { img: 'vfx/gabumon-poses.png', w: 128, h: 107, ax: 57, feet: 101, body: 75, charge: [0, 1, 2],        // tools/mkguide.py
-    seq: [[3, 0.14], [4, 0.3], [5, 0.5], [6, 0.68], [7, 0.85]], mouth: [38, -41] },
+    seq: [[3, 0.14], [4, 0.3], [5, 0.5], [6, 0.68], [7, 0.85]], mouth: [38, -41], fx: { row: 1, len: 70 } }, // Petit Fire: blast → spread → eruption → embers → dissolve
 };
 for (const A of Object.values(ANIM)) A.im = Object.assign(new Image(), { src: A.img });
 const animOf = u => ANIM[u.d.n];
@@ -217,8 +220,7 @@ function customPose(u) {
   if (u.state === 'ult') return (A.seq.find(s => u.st < s[1]) || A.seq.at(-1))[0];
   return -1;
 }
-// Gabumon "Petit Fire": special-fx.png row 1 frames F4–F8 (cone blast → spread → eruption → embers → dissolve) from his
-// mouth. It reuses his pose timing (ANIM.Gabumon.seq): pose frame n and fx frame n line up, so they can't drift apart.
+const ANIM_VISUAL = new Set(['shard', 'beam2', 'streak', 'swing', 'aura', 'orbit', 'meteor']); // generic ult visuals that never deal damage
 const SFX_W = 96, SFX_H = 100, sfxImg = Object.assign(new Image(), { src: 'vfx/special-fx.png' });
 
 // Basic attacks (vfx/basic-vfx.png, cut by tools/mkguide.py basic-vfx): 10 element rows × [projectile, melee], 112×26,
@@ -362,6 +364,7 @@ function fireUlt(u) {
   const P = (a, r, x, y, n, life) => { for (let i = 0; i < n; i++) fxs.push({ kind: 'shard', x, y, a: a(i, n), r, vis: v, t: 0, life }); };
   u.ult = 0; u.ultAt = null;
   if (isOmni(u)) { allDelete(u, tx, ty, D); return; }
+  const n0 = fxs.length;
   if (!v) { fxs.push({ kind: 'beam', x1: ox, y1: oy, x2: tx, y2: ty, c, t: 0, life: 0.18 }); ultBlast(hit); return; }
   switch (kind) {
     case 'beam': { const len = 210; hitLine(u, ox, oy, ang, len, 12, D);
@@ -372,7 +375,6 @@ function fireUlt(u) {
     case 'melee': hitArc(u, u.x, u.y - 8, ang, 0.9, 64, D * 1.2);
       fxs.push({ kind: 'swing', u, ang, r: 64, vis: v, c, t: 0, life: 0.3, skill: sk }); break;
     case 'cone': hitArc(u, ox, oy, ang, 0.45, 150, D);
-      if (u.d.n === 'Gabumon') { fxs.push({ kind: 'petitfire', u, ang, t: 0, life: ANIM.Gabumon.seq.at(-1)[1] }); break; }
       P((i, n) => ang - 0.45 + 0.9 * i / (n - 1), 150, ox, oy, 7, 0.35); break;
     case 'nova': hitCircle(u, u.x, u.y - 8, 100, D * 0.9);
       P((i, n) => i / n * Math.PI * 2, 100, u.x, u.y - 10, 10, 0.4); break;
@@ -398,6 +400,8 @@ function fireUlt(u) {
       hit.pierce = statusOf(u).pierce || 0; hit.ang = ang;
       fxs.push({ kind: 'ultshot', x1: ox, y1: oy, x2: tx, y2: ty, hit, t: 0, life: Math.max(0.12, Math.min(0.45, dist / 380)) });
   }
+  const A = animOf(u); // a custom effect replaces the generic visuals pushed above; anything that deals damage stays
+  if (A && A.fx) { fxs = fxs.filter((f, i) => i < n0 || !ANIM_VISUAL.has(f.kind)); fxs.push({ kind: 'animfx', u, ang, t: 0, life: A.seq.at(-1)[1] }); }
   // archetypes without a blast still get the skill's impact: on the caster for area kinds, else on the target spot
   if (sk && !['projectile', 'meteor', 'boomerang'].includes(kind))
     fxs.push(['nova', 'aura', 'orbit'].includes(kind) ? skillHit(sk, u.x, u.y - 8, kind === 'nova' ? 100 : 80, u) : skillHit(sk, tx, ty, hit.r));
@@ -864,15 +868,15 @@ function draw(t, ui = t) { // t drives the world's animations, ui the winner car
       } else drawAD(fr, f.x2, f.y2 - 6, fr === 4 ? 0.8 + 0.08 * q : 0.75, false, fr === 7 ? 1 - q : 1);
     } else if (f.kind === 'basicmelee') { // element slash on the target, swelling then fading over ~0.2 s
       drawBasic(f.row, 1, f.x, f.y, f.ang, 0.3 * (0.85 + 0.3 * p), 1 - p * p);
-    } else if (f.kind === 'petitfire') { // the cone grows out of Gabumon's mouth toward the target (art points right)
-      const u = f.u, A = animOf(u); // A is gone if he digivolved mid-cone: then the cone just stops drawing
-      if (sfxImg.naturalWidth && A) {
-        const k = animScale(u), dir = u.face > 0 ? 1 : -1, fr = (A.seq.find(s => f.t < s[1]) || A.seq.at(-1))[0];
-        const sc = 70 / SFX_W; // the cone is drawn ~70 px long (its hit reaches 150 px) so it doesn't swamp a Rookie
+    } else if (f.kind === 'animfx') { // an ANIM entry's fx row grows out of its mouth toward the target (art points right)
+      const u = f.u, A = animOf(u); // A is gone if it digivolved mid-attack: then the effect just stops drawing
+      if (sfxImg.naturalWidth && A && A.fx) {
+        const k = animScale(u), dir = u.face > 0 ? 1 : -1, last = A.seq.at(-1), fr = (A.seq.find(s => f.t < s[1]) || last)[0];
+        const sc = A.fx.len / SFX_W; // drawn short (Gabumon's cone hits out to 150 px) so it doesn't swamp a Rookie
         ctx.save(); ctx.translate(Math.round(u.x + dir * A.mouth[0] * k), Math.round(u.y + A.mouth[1] * k)); ctx.rotate(f.ang);
         if (Math.cos(f.ang) < 0) ctx.scale(1, -1); // keep the art upright when firing left
-        ctx.globalAlpha = fr === 7 ? 1 - p : 1;
-        ctx.drawImage(sfxImg, fr * SFX_W, SFX_H, SFX_W, SFX_H, 0, -SFX_H * sc / 2, SFX_W * sc, SFX_H * sc); ctx.restore();
+        ctx.globalAlpha = fr === last[0] ? 1 - p : 1;
+        ctx.drawImage(sfxImg, fr * SFX_W, A.fx.row * SFX_H, SFX_W, SFX_H, 0, -SFX_H * sc / 2, SFX_W * sc, SFX_H * sc); ctx.restore();
       }
     } else if (f.kind === 'adframe') { // one All Delete frame on a unit (Omnimon's entrance vortex)
       drawAD(f.f, f.u.x, f.u.y - 14, f.sc * (0.6 + 0.4 * p), false, 1 - p * p);
@@ -1033,13 +1037,15 @@ if (new URLSearchParams(location.search).has('test')) {
     const keep = { units, fxs, drops, feed, time, MODE, zevDone, meteors, over }; MODE = 'rookie'; fxs = []; drops = []; feed = []; time = 5; zevDone = true; over = false; // no zone event, and not frozen by a finished round
     const gm = mkUnit(ROSTER.find(d => d.n === 'Gabumon'), CX, CY), front = mkUnit(ROSTER.find(d => d.n === 'Agumon'), CX + 45, CY), back = mkUnit(ROSTER.find(d => d.n === 'Palmon'), CX - 70, CY);
     front.hp = 1; back.hp = back.hpMax = 99999; gm.ult = 100; gm.face = 1; units = [gm, front, back];
-    let faced = true, threw = null, crate = false;
+    let faced = true, threw = null, crate = false, fx = 0, shards = 0;
     try {
-      for (let i = 0; i < 45; i++) { update(1 / 30); if (gm.state === 'ult' && gm.face !== 1) faced = false; draw(5); }
+      for (let i = 0; i < 45; i++) { update(1 / 30); if (gm.state === 'ult' && gm.face !== 1) faced = false;
+        fx = Math.max(fx, fxs.filter(f => f.kind === 'animfx').length); shards = Math.max(shards, fxs.filter(f => f.kind === 'shard').length); draw(5); }
       gm.ult = 100; gm.exp = LEVEL_EXP - 1; gm.lvl = EVOLVE_EVERY - 1;
-      for (let i = 0; i < 45; i++) { update(1 / 30); if (!crate && fxs.some(f => f.kind === 'petitfire')) { crate = true; drops.push({ x: gm.x, y: gm.y, kind: 'exp', t: 9 }); } draw(5); }
+      for (let i = 0; i < 45; i++) { update(1 / 30); if (!crate && fxs.some(f => f.kind === 'animfx')) { crate = true; drops.push({ x: gm.x, y: gm.y, kind: 'exp', t: 9 }); } draw(5); }
     } catch (err) { threw = err.message; }
     ok('Gabumon keeps facing his cone after it KOs the target', faced && front.dead);
+    ok('ANIM fx: his ult plays its special-fx row instead of the generic cone sparks', fx === 1 && shards === 0);
     ok('digivolving mid-cone ends the attack without freezing the game', crate && !threw && gm.d.n !== 'Gabumon' && customPose(gm) === -1);
     ({ units, fxs, drops, feed, time, MODE, zevDone, meteors, over } = keep);
   });
